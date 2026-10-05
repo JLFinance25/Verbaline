@@ -1,45 +1,17 @@
 import Foundation
 
-/// "press enter" / "press return" as the last words of a dictation: paste the rest, then press Return
-/// (which sends the message in chat apps).
+/// "press enter" / "press return" said on its own, as a whole dictation: press Return (which sends the
+/// message in chat apps). The user has already seen the text on screen, so nothing is sent unchecked.
 ///
-/// Only the very end counts ("press enter to log in, then…" is just text), and not right after a word
-/// that makes it a description rather than a command ("tell them to press enter", "you press enter").
-/// A sentence break in between undoes that: "Ask them to. Press enter." still sends.
+/// Said at the end of a longer dictation it's just text ("sounds good, press enter" pastes as is):
+/// Verbaline never pastes and sends in one step, so a misheard word can't go out by itself.
 enum PressEnter {
-    private static let tailRX = try! NSRegularExpression(pattern:
-        "(?<![\\p{L}\\p{N}])press[ ,]+(?:enter|return)[\\s.,;:!?]*$", options: .caseInsensitive)
+    private static let wholeRX = try! NSRegularExpression(pattern:
+        "^[\\s.,;:!?]*press[ ,]+(?:enter|return)[\\s.,;:!?]*$", options: .caseInsensitive)
 
-    private static let blockingWordsBefore: Set<String> = [
-        "to", "you", "we", "they", "i", "he", "she", "it", "should", "can", "could", "will", "would", "must",
-        "then", "and", "or", "just", "not", "don't", "dont", "never", "always", "please"]
-
-    /// Splits off a trailing "press enter". `text` is what's left to paste (empty: press Return only).
+    /// `pressEnter` is true only when the whole dictation is the command; then `text` is empty.
     static func split(_ raw: String) -> (text: String, pressEnter: Bool) {
-        let ns = raw as NSString
-        guard let m = tailRX.firstMatch(in: raw, range: NSRange(location: 0, length: ns.length)) else {
-            return (raw, false)
-        }
-        let before = ns.substring(to: m.range.location)
-        if let word = lastWord(before), blockingWordsBefore.contains(word) { return (raw, false) }
-        var text = before
-        // "Sounds good, press enter" → "Sounds good" (no dangling comma); keep . ! ?
-        while let last = text.last, last.isWhitespace || last == "," || last == ";" || last == ":" { text.removeLast() }
-        return (text, true)
-    }
-
-    /// The word right before the command, lowercased — nil if a sentence break (. ! ?) comes first.
-    private static func lastWord(_ text: String) -> String? {
-        var word = ""
-        for ch in text.reversed() {
-            if ch.isLetter || ch.isNumber || ch == "'" || ch == "’" {
-                word.append(ch)
-            } else if !word.isEmpty {
-                break
-            } else if ch == "." || ch == "!" || ch == "?" || ch == "\n" {
-                return nil
-            }
-        }
-        return word.isEmpty ? nil : String(word.reversed()).lowercased().replacingOccurrences(of: "’", with: "'")
+        let range = NSRange(location: 0, length: (raw as NSString).length)
+        return wholeRX.firstMatch(in: raw, range: range) == nil ? (raw, false) : ("", true)
     }
 }

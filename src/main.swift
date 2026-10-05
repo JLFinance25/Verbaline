@@ -368,8 +368,8 @@ if args.count > 2, args[1] == "--typetest" {
     }
     exit(0)
 }
-// "press enter" test: paste into a host window (that process only), press Return the way the app does,
-// and check the text landed before the line break. `open -n Verbaline.app --args --entertest out.json`
+// "press enter" test: text already in a host window (that process only), then Return the way the app
+// presses it for a spoken "press enter"; check the text is intact before the line break. `open -n Verbaline.app --args --entertest out.json`
 if args.count > 2, args[1] == "--entertest" {
     let sample = "Sounds good, see you at three."
     var report: [String: Any] = ["expected": sample + "\n", "returnDelay": AppDelegate.returnDelay]

@@ -81,7 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         set { defaults.set(newValue, forKey: "learnFromEdits") }
     }
     /// Type dictation out as keystrokes instead of pasting (Command Mode results always paste).
-    /// "press enter" at the end of a dictation presses Return after the text goes in.
+    /// Saying just "press enter" presses Return. Never combined with pasting, so nothing is sent unchecked.
     private var pressEnterCommand: Bool {
         get { defaults.object(forKey: "pressEnterCommand") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "pressEnterCommand") }
@@ -567,7 +567,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.overlay.flash(self.typingStoppedBySwitch ? "Stopped typing — you switched apps" : "Stopped typing", seconds: 1.5)
                 return   // only part of the text went in: nothing to watch
             }
-            if pressEnter { self.pressReturnSoon() }
             if let notice {
                 self.overlay.flash(notice, seconds: 2.5)
             } else if let fix = fixes.first {
@@ -575,13 +574,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let more = fixes.count > 1 ? "  +\(fixes.count - 1)" : ""
                 self.overlay.flash(.badge(.fixed, "\(Self.short(fix.from)) → \(Self.short(fix.to))\(more)"), seconds: 2.2)
                 self.play("Purr")
-            } else if pressEnter {
-                self.overlay.flash("↵ Sent", seconds: 0.9)
             } else {
                 self.overlay.hide()
             }
-            // After Return the message is usually sent and the box emptied: nothing to learn from.
-            if self.learnFromEdits, !secureField, !pressEnter, let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier {
+            if self.learnFromEdits, !secureField, let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier {
                 self.editWatcher.watch(pasted: trimmed, in: pid)
             }
         }
@@ -758,7 +754,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(forget)
         }
 
-        let enter = NSMenuItem(title: "Press Enter Command (end with “press enter” to send)", action: #selector(togglePressEnter), keyEquivalent: "")
+        let enter = NSMenuItem(title: "Press Enter Command (say just “press enter” to send)", action: #selector(togglePressEnter), keyEquivalent: "")
         enter.target = self
         enter.state = pressEnterCommand ? .on : .off
         menu.addItem(enter)

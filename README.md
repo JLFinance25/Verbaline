@@ -45,7 +45,7 @@ Everything runs on your Mac. Speech recognition uses Apple's built-in **SpeechAn
 | "…**scratch that**" | removes what you said just before it |
 | "Delete that." (said on its own between sentences) | removes the sentence before it |
 | A snippet trigger, like "insert my signature" | pastes your saved text exactly |
-| "…see you at three, **press enter**" (the last thing you say) | pastes your text, then presses Return, which sends it in chat apps. "Press enter" on its own just presses Return. "Press return" works too. |
+| "**Press enter**" (said on its own, after you've checked your text) | presses Return, which sends the message in chat apps. "Press return" works too. At the end of a longer dictation it's just text, so nothing is ever sent before you've seen it. |
 
 Normal phrases are left alone: "a new line of credit", "the bullet point is…", "can you delete that?", "tell them to press enter". *AI cleanup* means Apple Intelligence is on and **AI Cleanup** is checked in the menu; everything else works without it.
 
@@ -80,9 +80,9 @@ Normal phrases are left alone: "a new line of credit", "the bullet point is…",
   - Neither the AI nor the dictionary ever touches it.
 - **Spoken formatting:** new line, new paragraph, bullets.
 - **Press enter to send**
-  - End a dictation with "press enter" and Verbaline presses Return after pasting, so a chat message goes out in one step.
-  - It only counts as the very last thing you say, and not after words like "to", "you" or "please".
-  - Switch it off in the menu.
+  - Dictate your message, check it, then hold fn and say just "press enter" to send it.
+  - Verbaline never pastes and sends in one step, so a misheard word can't go out on its own.
+  - Switch it off in the menu (**Press Enter Command**).
 - **Noise handling**
   - Ignores recordings with no speech (taps, clicks, fidgeting) and shrinks long pauses.
   - Uses Apple's echo cancellation when sound plays from your speakers.
