@@ -107,19 +107,19 @@ Wispr Flow is the polished commercial app that inspired this project. Here's an 
 | | Verbaline | Wispr Flow |
 |---|---|---|
 | Where your speech is processed | On your Mac (Apple SpeechAnalyzer) | Wispr's cloud |
-| AI cleanup | On your Mac (Apple Foundation Models) | Cloud models (Wispr's terms mention OpenAI and Anthropic) |
+| AI cleanup | On your Mac (Apple Foundation Models) | Cloud models (Wispr's terms say it may use OpenAI or Anthropic models) |
 | Account | None | Required |
-| Price | Free, open source (MIT) | Free plan: 2,000 words/week. Pro: $12–15/month |
-| Command Mode (rewrite by voice) | Included, on-device | Pro or trial only; sends your text to their servers |
-| Number guard for rates and amounts | Yes | Not documented |
+| Price | Free, open source (MIT) | Free plan: 2,000 words/week on desktop (1,000 on mobile). Pro: $12–15/month |
+| Command Mode (rewrite by voice) | Included, on-device | Pro or trial only; runs on Wispr's servers |
+| Number guard for rates and amounts | Yes | Not mentioned in the Wispr pages we checked |
 | Learns from your edits | Yes | Yes |
 | Snippets, personal dictionary | Yes | Yes |
 | Languages | English (US) | 100+ |
-| Platforms | macOS 26+ on Apple Silicon | Mac, Windows, iPhone |
-| Meeting notes | No | Yes (Notetaker, beta) |
+| Platforms | macOS 26+ on Apple Silicon | Mac, Windows, iPhone, Android |
+| Meeting notes | No | Yes (Notetaker) |
 | Polish and support | A personal project | A commercial product with a team behind it |
 
-Sources: [pricing](https://wisprflow.ai/pricing), [Command Mode help](https://docs.wisprflow.ai/articles/4816967992-how-to-use-command-mode), [terms](https://wisprflow.ai/terms-of-service). Verbaline is not affiliated with or endorsed by Wispr.
+Sources: [pricing](https://wisprflow.ai/pricing), [data controls](https://wisprflow.ai/data-controls), [supported devices](https://docs.wisprflow.ai/articles/1036674442-supported-devices-and-system-requirements), [Command Mode help](https://docs.wisprflow.ai/articles/4816967992-how-to-use-command-mode), [terms](https://wisprflow.ai/terms-of-service). Verbaline is not affiliated with or endorsed by Wispr.
 
 ---
 
@@ -171,7 +171,7 @@ The first build asks for keychain access to the certificate. Approve it once.
 - **Audio stays in memory.** Recordings are never written to disk or sent anywhere.
 - **No networking code.** On first launch Verbaline asks macOS to install Apple's English speech model if it's missing; macOS does the download. Apple Intelligence models are managed by macOS.
 - **The key watcher** sees every key press system-wide, but only looks at which key it was, to spot fn, Esc and fn+key shortcuts. It never records keystrokes.
-- **Password fields are never read.** If you dictate into one, the text goes in but isn't saved to history or watched.
+- **Password fields are skipped when the app marks them as password fields.** If you dictate into one, the text goes in but isn't saved to history or watched. Some apps, such as Chrome and Slack, don't tell macOS which box you're typing in, so Verbaline can't always tell. Don't dictate passwords.
 - **What's stored** in `~/Library/Application Support/Verbaline/` (a folder only your account can open):
   - `history.jsonl`: your dictations and Command Mode results, in plain text, trimmed to the newest 2,000 entries once it passes 5,000. Delete it any time.
   - `dictionary.txt`: your words and learned fixes.

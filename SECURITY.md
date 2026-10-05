@@ -21,7 +21,7 @@ Verbaline asks for powerful permissions, so here is exactly what it does with th
     - after a paste, the text box that holds the pasted text, for Learn From My Edits;
     - your selection, for Command Mode;
     - the character just before the cursor, for smart spacing.
-  - **Password fields** are never read, and dictation into them isn't saved.
+  - **Password fields** are skipped when the app marks them as password fields: they aren't read, and dictation into them isn't saved. Some apps (such as Chrome and Slack) don't report which field has focus, so this check can miss; don't dictate secrets.
   - **Electron apps:** sets `AXManualAccessibility` on them so their text boxes can be read.
 - **Network:** Verbaline has no networking code. It asks macOS to install Apple's speech model if missing.
 - **Local files:** `~/Library/Application Support/Verbaline/` holds history, dictionary, snippets and status. The folder is readable only by your account.
