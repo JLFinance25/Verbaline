@@ -139,6 +139,16 @@ enum TextInserter {
 
     private static func pressCommandV() { pressKey(9, flags: .maskCommand) }   // V
 
+    /// Presses Return in the frontmost app — or only in `pid`, for the self-test. ("press enter" command)
+    static func pressReturn(toPid pid: pid_t? = nil) {
+        let source = CGEventSource(stateID: .combinedSessionState)
+        for down in [true, false] {
+            guard let event = CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: down) else { continue }
+            event.flags = []
+            if let pid { event.postToPid(pid) } else { event.post(tap: .cghidEventTap) }
+        }
+    }
+
     private static func pressKey(_ key: CGKeyCode, flags: CGEventFlags) {
         let source = CGEventSource(stateID: .combinedSessionState)
         let down = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: true)

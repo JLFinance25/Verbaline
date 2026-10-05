@@ -13,6 +13,8 @@ final class FnKeyMonitor {
     /// Always delivered after the matching onFnDown.
     var onControlWithFn: (() -> Void)?
     var onEscape: (() -> Void)?
+    /// When the latest fn press/release reached the tap (system uptime), for latency timings. Main thread only.
+    private(set) var lastFnEventAt: TimeInterval = 0
 
     /// While true, Esc is swallowed (it cancels dictation instead of also closing a dialog in the app).
     var swallowEscape: Bool {
@@ -77,7 +79,8 @@ final class FnKeyMonitor {
             if down != fnIsDown {
                 fnIsDown = down
                 let handler = down ? onFnDown : onFnUp
-                DispatchQueue.main.async { handler?() }
+                let at = ProcessInfo.processInfo.systemUptime
+                DispatchQueue.main.async { [weak self] in self?.lastFnEventAt = at; handler?() }
                 if down && control {
                     let command = onControlWithFn
                     DispatchQueue.main.async { command?() }

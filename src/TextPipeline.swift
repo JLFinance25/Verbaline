@@ -6,11 +6,15 @@ enum TextPipeline {
         let text: String
         /// Word swaps the dictionary's `heard -> written` lines made (learned or added by hand), for the "Fixed" pill.
         let fixes: [(from: String, to: String)]
+        /// The dictation ended with "press enter": press Return after inserting `text` (which may be empty).
+        var pressEnter = false
     }
 
     static func finish(_ raw: String, useAI: Bool, cleaner: TextCleaner,
-                       dictionary: PersonalDictionary, snippets: Snippets) async -> Result {
-        guard !raw.isEmpty else { return Result(text: "", fixes: []) }
+                       dictionary: PersonalDictionary, snippets: Snippets, pressEnterCommand: Bool = false) async -> Result {
+        // Taken off before cleanup so the AI can't reword or drop the command.
+        let (raw, pressEnter) = pressEnterCommand ? PressEnter.split(raw) : (raw, false)
+        guard !raw.isEmpty else { return Result(text: "", fixes: [], pressEnter: pressEnter) }
         // Snippets and spoken formatting are exact by design. The AI could reword a trigger phrase or
         // merge lines, so a dictation that uses either gets the rule cleanup only.
         let exact = snippets.containsTrigger(raw) || SpokenFormatting.containsCommand(raw)
@@ -18,6 +22,6 @@ enum TextPipeline {
         let marked = snippets.mark(cleaned)                      // triggers → placeholders nothing else touches
         let spelled = dictionary.applyReporting(to: marked.text)
         let formatted = SpokenFormatting.apply(spelled.text)
-        return Result(text: snippets.fill(formatted, marked.expansions), fixes: spelled.swaps)
+        return Result(text: snippets.fill(formatted, marked.expansions), fixes: spelled.swaps, pressEnter: pressEnter)
     }
 }

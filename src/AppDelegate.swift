@@ -35,6 +35,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
     private var fnDownAt: TimeInterval = 0
+    // Latency timings for the current recording (system uptime / seconds), saved with it in history.
+    private var recordingKeyAt: TimeInterval = 0   // when the fn press that started it reached Verbaline
+    private var micStartCall: TimeInterval = 0     // how long starting the mic blocked the main thread
     private var swallowNextFnUp = false
     private var holdTimer: Timer?
     private var tapTimer: Timer?
@@ -78,6 +81,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         set { defaults.set(newValue, forKey: "learnFromEdits") }
     }
     /// Type dictation out as keystrokes instead of pasting (Command Mode results always paste).
+    /// "press enter" at the end of a dictation presses Return after the text goes in.
+    private var pressEnterCommand: Bool {
+        get { defaults.object(forKey: "pressEnterCommand") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "pressEnterCommand") }
+    }
     private var typeOut: Bool {
         get { defaults.object(forKey: "typeOut") as? Bool ?? false }
         set { defaults.set(newValue, forKey: "typeOut") }
@@ -190,7 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func handleFnDown() {
         switch mode {
         case .idle:
-            guard beginRecording() else { return }
+            guard beginRecording(pressedAt: fn.lastFnEventAt) else { return }
             mode = .pressed
             fnDownAt = ProcessInfo.processInfo.systemUptime
             holdTimer = Timer.scheduledTimer(withTimeInterval: tapMax, repeats: false) { [weak self] _ in
@@ -206,7 +214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             announceListening(handsFree: true)
         case .handsFree:
             swallowNextFnUp = true
-            finishRecording()
+            finishRecording(releasedAt: fn.lastFnEventAt)
         case .processing:
             play("Bottle")   // still finishing the last dictation — audible "busy" instead of silently ignoring
         case .pressed, .pushToTalk:
@@ -228,7 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.cancelRecording(showMessage: false)   // just a single tap — ignore it
             }
         case .pressed, .pushToTalk:
-            finishRecording()
+            finishRecording(releasedAt: fn.lastFnEventAt)
         default:
             break
         }
@@ -271,7 +279,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         s.count <= 22 ? s : String(s.prefix(21)) + "…"
     }
 
-    private func beginRecording() -> Bool {
+    /// `pressedAt`: when the fn press reached Verbaline (now, if started from the menu).
+    private func beginRecording(pressedAt: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Bool {
         editWatcher.finishNow()   // a new dictation means the user is done fixing the last one
         if !micAuthorized {
             switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -286,7 +295,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         do {
+            let callStarted = ProcessInfo.processInfo.systemUptime
             try recorder.start()
+            micStartCall = ProcessInfo.processInfo.systemUptime - callStarted
+            recordingKeyAt = pressedAt
             return true
         } catch {
             overlay.flash("Mic error: \(error.localizedDescription)")
@@ -354,9 +366,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if showMessage { overlay.flash("Cancelled", seconds: 0.9) } else { overlay.hide() }
     }
 
-    private func finishRecording() {
+    /// `releasedAt`: when the fn press/release that ended the recording reached Verbaline (now, if a timer ended it).
+    private func finishRecording(releasedAt: TimeInterval? = nil) {
         invalidateTimers()
+        let releaseAt = releasedAt ?? ProcessInfo.processInfo.systemUptime
+        var recordStats: [String: Double] = ["micStartCall": micStartCall]
+        if let first = recorder.firstBufferAt { recordStats["keyToMic"] = first - recordingKeyAt }
+        let stopStarted = ProcessInfo.processInfo.systemUptime
         let samples = recorder.stop()
+        recordStats["stop"] = ProcessInfo.processInfo.systemUptime - stopStarted
         let seconds = Double(samples.count) / AudioRecorder.sampleRate
         let isCommand = commandMode
         commandMode = false
@@ -380,13 +398,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let useAI = aiCleanup
         let filter = noiseFilter
+        let sendCommand = pressEnterCommand
         Task { [weak self] in
             guard let self else { return }
             let started = Date()
             do {
                 // 1. Keep only the voiced parts: drops chip clicks / fidget noise and shrinks long pauses.
                 var audio = samples
-                var timings: [String: Double] = [:]
+                var timings = recordStats
                 if filter {
                     let gate = SpeechGate.process(samples, sampleRate: AudioRecorder.sampleRate)
                     timings["gate"] = Date().timeIntervalSince(started)
@@ -394,7 +413,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     timings["audioOut"] = gate.outputSeconds
                     guard gate.hasSpeech else {
                         let stats = timings
-                        await MainActor.run { self.deliver(raw: "", text: "", fixes: [], seconds: seconds, timings: stats) }
+                        await MainActor.run { self.deliver(raw: "", text: "", fixes: [], seconds: seconds, timings: stats, releasedAt: releaseAt) }
                         return
                     }
                     audio = gate.samples
@@ -407,12 +426,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // 3. Cleanup (skips the AI when there's nothing for it to fix), then dictionary spellings.
                 let t2 = Date()
                 let result = await TextPipeline.finish(raw, useAI: useAI, cleaner: self.cleaner,
-                                                       dictionary: self.dictionary, snippets: self.snippets)
+                                                       dictionary: self.dictionary, snippets: self.snippets,
+                                                       pressEnterCommand: sendCommand)
                 timings["cleanup"] = Date().timeIntervalSince(t2)
                 timings["total"] = Date().timeIntervalSince(started)
                 let stats = timings
                 await MainActor.run {
-                    self.deliver(raw: raw, text: result.text, fixes: result.fixes, seconds: seconds, timings: stats)
+                    self.deliver(raw: raw, text: result.text, fixes: result.fixes, seconds: seconds, timings: stats,
+                                 releasedAt: releaseAt, pressEnter: result.pressEnter)
                 }
             } catch {
                 await MainActor.run {
@@ -514,7 +535,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func deliver(raw: String, text: String, fixes: [(from: String, to: String)],
-                         seconds: Double, timings: [String: Double]) {
+                         seconds: Double, timings: [String: Double], releasedAt: TimeInterval, pressEnter: Bool = false) {
+        var timings = timings
         mode = .idle
         if timings["speech"] != nil { engineStatus = "Ready" }   // a launch-time model error has since recovered
         defer { writeStatus() }
@@ -522,11 +544,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pendingNotice = nil
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            overlay.flash("No speech detected", seconds: 1.2)
+            if pressEnter, AXIsProcessTrusted() {   // said only "press enter"
+                pressReturnSoon()
+                overlay.flash("↵ Enter", seconds: 0.9)
+            } else {
+                overlay.flash("No speech detected", seconds: 1.2)
+            }
             return
         }
         // Dictating into a password field is allowed, but nothing about it is saved or watched.
+        let checkStarted = ProcessInfo.processInfo.systemUptime
         let secureField = TextInserter.focusedFieldIsSecure()
+        timings["fieldCheck"] = ProcessInfo.processInfo.systemUptime - checkStarted
         // After the text is in: confirmations, then watch for the user's fixes.
         let afterInsert: (_ inserted: Bool, _ stoppedEarly: Bool) -> Void = { [weak self] inserted, stoppedEarly in
             guard let self else { return }
@@ -538,6 +567,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.overlay.flash(self.typingStoppedBySwitch ? "Stopped typing — you switched apps" : "Stopped typing", seconds: 1.5)
                 return   // only part of the text went in: nothing to watch
             }
+            if pressEnter { self.pressReturnSoon() }
             if let notice {
                 self.overlay.flash(notice, seconds: 2.5)
             } else if let fix = fixes.first {
@@ -545,10 +575,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let more = fixes.count > 1 ? "  +\(fixes.count - 1)" : ""
                 self.overlay.flash(.badge(.fixed, "\(Self.short(fix.from)) → \(Self.short(fix.to))\(more)"), seconds: 2.2)
                 self.play("Purr")
+            } else if pressEnter {
+                self.overlay.flash("↵ Sent", seconds: 0.9)
             } else {
                 self.overlay.hide()
             }
-            if self.learnFromEdits, !secureField, let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier {
+            // After Return the message is usually sent and the box emptied: nothing to learn from.
+            if self.learnFromEdits, !secureField, !pressEnter, let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier {
                 self.editWatcher.watch(pasted: trimmed, in: pid)
             }
         }
@@ -568,19 +601,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.typingStoppedBySwitch = true
                 self.typer.cancel()
             }
+            timings["releaseToTypeStart"] = ProcessInfo.processInfo.systemUptime - releasedAt
             typer.type(TextInserter.leadingSpaceIfNeeded() + trimmed, speed: typingSpeed) { [weak self] finished in
                 NSWorkspace.shared.notificationCenter.removeObserver(switchWatch)
                 self?.mode = .idle
                 afterInsert(true, !finished)
             }
         } else {
-            afterInsert(TextInserter.insert(trimmed), false)
+            let pasteStarted = ProcessInfo.processInfo.systemUptime
+            let inserted = TextInserter.insert(trimmed)
+            let pasted = ProcessInfo.processInfo.systemUptime
+            timings["paste"] = pasted - pasteStarted
+            timings["releaseToPaste"] = pasted - releasedAt
+            afterInsert(inserted, false)
         }
         let rounded = timings.mapValues { ($0 * 1000).rounded() / 1000 }
         if !secureField {
             history.add(HistoryEntry(date: Date(), raw: raw, text: trimmed, seconds: seconds, timings: rounded))
         }
     }
+
+    /// "press enter": Return goes to the app that got the text, a moment after it, so slower apps
+    /// (Electron, web) have taken the paste in before the message is sent.
+    private func pressReturnSoon() {
+        let target = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.returnDelay) {
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == target else { return }
+            TextInserter.pressReturn()
+        }
+    }
+    static let returnDelay: TimeInterval = 0.12
 
     private func play(_ name: String) {
         guard soundsOn, let sound = NSSound(named: NSSound.Name(name)) else { return }
@@ -708,6 +758,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(forget)
         }
 
+        let enter = NSMenuItem(title: "Press Enter Command (end with “press enter” to send)", action: #selector(togglePressEnter), keyEquivalent: "")
+        enter.target = self
+        enter.state = pressEnterCommand ? .on : .off
+        menu.addItem(enter)
+
         let type = NSMenuItem(title: "Type It Out Instead of Pasting (your dictation only)", action: #selector(toggleTypeOut), keyEquivalent: "")
         type.target = self
         type.state = typeOut ? .on : .off
@@ -792,6 +847,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleAI() { aiCleanup.toggle() }
     @objc private func toggleSounds() { soundsOn.toggle() }
     @objc private func toggleTypeOut() { typeOut.toggle() }
+    @objc private func togglePressEnter() { pressEnterCommand.toggle() }
     @objc private func setTypingSpeed(_ sender: NSMenuItem) {
         if let raw = sender.representedObject as? String, let speed = TextTyper.Speed(rawValue: raw) { typingSpeed = speed }
     }

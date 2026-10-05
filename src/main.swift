@@ -312,6 +312,15 @@ if args.count > 2, args[1] == "--commandtest" {
     }
     exit(0)
 }
+/// The host window isn't the active app (so the tests never take focus from you). An inactive app gets ⌘V
+/// as a plain keyDown instead of through its Edit menu, and NSTextView ignores that — so paste here,
+/// as the frontmost app's Edit menu would.
+final class PasteHostTextView: NSTextView {
+    override func keyDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "v" { paste(nil); return }
+        super.keyDown(with: event)
+    }
+}
 // Typing test: `open -n Verbaline.app --args --typetest out.json` — a host window opens, Verbaline types into that
 // process only (never the app you're using), then reads back what arrived.
 let typeSample = "Hi Sarah, café 👋\nLine two: rate 6.5% & $2,450."
@@ -321,7 +330,7 @@ if args.count > 1, args[1] == "--typehost" {
     let window = NSWindow(contentRect: NSRect(x: 240, y: 240, width: 560, height: 160),
                           styleMask: [.titled], backing: .buffered, defer: false)
     window.title = "Verbaline self-test — closes by itself"
-    let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 560, height: 160))
+    let textView = PasteHostTextView(frame: NSRect(x: 0, y: 0, width: 560, height: 160))
     textView.font = .systemFont(ofSize: 15)
     window.contentView = textView
     window.makeKeyAndOrderFront(nil)
@@ -354,6 +363,39 @@ if args.count > 2, args[1] == "--typetest" {
     let got = box.flatMap { AXText.string($0, kAXValueAttribute) }
     report["got"] = got ?? "(couldn't read)"
     report["matches"] = got == typeSample
+    if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+        try? data.write(to: URL(fileURLWithPath: args[2]))
+    }
+    exit(0)
+}
+// "press enter" test: paste into a host window (that process only), press Return the way the app does,
+// and check the text landed before the line break. `open -n Verbaline.app --args --entertest out.json`
+if args.count > 2, args[1] == "--entertest" {
+    let sample = "Sounds good, see you at three."
+    var report: [String: Any] = ["expected": sample + "\n", "returnDelay": AppDelegate.returnDelay]
+    let config = NSWorkspace.OpenConfiguration()
+    config.createsNewApplicationInstance = true
+    config.arguments = ["--typehost"]
+    config.activates = false
+    var hostPid: pid_t = 0
+    NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: config) { app, _ in hostPid = app?.processIdentifier ?? 0 }
+    let t0 = Date()
+    while hostPid == 0, Date().timeIntervalSince(t0) < 5 { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+    RunLoop.main.run(until: Date().addingTimeInterval(1.0))
+    TextInserter.paste(sample, into: .general, press: {
+        let source = CGEventSource(stateID: .combinedSessionState)
+        for down in [true, false] {
+            let v = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: down)
+            v?.flags = .maskCommand
+            v?.postToPid(hostPid)
+        }
+    })
+    DispatchQueue.main.asyncAfter(deadline: .now() + AppDelegate.returnDelay) { TextInserter.pressReturn(toPid: hostPid) }
+    RunLoop.main.run(until: Date().addingTimeInterval(1.0))   // also lets the clipboard restore (0.6 s) finish
+    let box = AXText.textElement(containing: "three", in: hostPid) ?? AXText.focusedElement(in: hostPid)
+    let got = box.flatMap { AXText.string($0, kAXValueAttribute) }
+    report["got"] = got ?? "(couldn't read)"
+    report["matches"] = got == sample + "\n"
     if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
         try? data.write(to: URL(fileURLWithPath: args[2]))
     }

@@ -30,6 +30,8 @@ final class AudioRecorder {
     private(set) var lastInputFormat = ""
     /// Audio buffers delivered since the last start(). Safe to read from any thread.
     var buffersReceived: Int { lock.lock(); defer { lock.unlock() }; return _buffersReceived }
+    /// When the first audio buffer of this recording arrived (system uptime), for latency timings.
+    var firstBufferAt: TimeInterval? { lock.lock(); defer { lock.unlock() }; return _firstBufferAt }
     private var builtForSpeakers: Bool?
 
     private var engine: AVAudioEngine?
@@ -40,6 +42,7 @@ final class AudioRecorder {
     private var monoInput: AVAudioFormat?
     private var samples: [Float] = []
     private var _buffersReceived = 0
+    private var _firstBufferAt: TimeInterval?
     private var accepting = false
     private let lock = NSLock()
 
@@ -165,6 +168,7 @@ final class AudioRecorder {
         self.monoInput = mono
         samples.removeAll(keepingCapacity: true)
         _buffersReceived = 0
+        _firstBufferAt = nil
         lock.unlock()
         lastInputFormat = "out:\(inFormat.sampleRate)Hz/\(inFormat.channelCount)ch hw:\(input.inputFormat(forBus: 0).sampleRate)Hz/\(input.inputFormat(forBus: 0).channelCount)ch"
 
@@ -187,7 +191,7 @@ final class AudioRecorder {
         guard let device = MicCapture.builtInDevice(), let capture = MicCapture(device: device) else { return nil }
         capture.onSamples = { [weak self] chunk in
             guard let self else { return }
-            self.lock.lock(); self._buffersReceived += 1; self.lock.unlock()
+            self.lock.lock(); self.countBuffer(); self.lock.unlock()
             self.append(chunk)
         }
         micCapture = capture
@@ -198,7 +202,14 @@ final class AudioRecorder {
         lock.lock()
         samples.removeAll(keepingCapacity: true)
         _buffersReceived = 0
+        _firstBufferAt = nil
         lock.unlock()
+    }
+
+    /// Call while holding `lock`.
+    private func countBuffer() {
+        if _buffersReceived == 0 { _firstBufferAt = ProcessInfo.processInfo.systemUptime }
+        _buffersReceived += 1
     }
 
     private func setAccepting(_ on: Bool) {
@@ -260,7 +271,7 @@ final class AudioRecorder {
 
     private func process(_ buffer: AVAudioPCMBuffer) {
         lock.lock()
-        _buffersReceived += 1
+        countBuffer()
         let converter = self.converter, monoInput = self.monoInput
         lock.unlock()
         guard let converter, let monoInput, let src = buffer.floatChannelData, buffer.frameLength > 0 else { return }

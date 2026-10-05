@@ -45,8 +45,9 @@ Everything runs on your Mac. Speech recognition uses Apple's built-in **SpeechAn
 | "…**scratch that**" | removes what you said just before it |
 | "Delete that." (said on its own between sentences) | removes the sentence before it |
 | A snippet trigger, like "insert my signature" | pastes your saved text exactly |
+| "…see you at three, **press enter**" (the last thing you say) | pastes your text, then presses Return, which sends it in chat apps. "Press enter" on its own just presses Return. "Press return" works too. |
 
-Normal phrases are left alone: "a new line of credit", "the bullet point is…", "can you delete that?". *AI cleanup* means Apple Intelligence is on and **AI Cleanup** is checked in the menu; everything else works without it.
+Normal phrases are left alone: "a new line of credit", "the bullet point is…", "can you delete that?", "tell them to press enter". *AI cleanup* means Apple Intelligence is on and **AI Cleanup** is checked in the menu; everything else works without it.
 
 ### Command Mode instructions (examples)
 
@@ -78,6 +79,10 @@ Normal phrases are left alone: "a new line of credit", "the bullet point is…",
   - Say a trigger phrase to paste exact saved text, such as a signature, disclaimer or link.
   - Neither the AI nor the dictionary ever touches it.
 - **Spoken formatting:** new line, new paragraph, bullets.
+- **Press enter to send**
+  - End a dictation with "press enter" and Verbaline presses Return after pasting, so a chat message goes out in one step.
+  - It only counts as the very last thing you say, and not after words like "to", "you" or "please".
+  - Switch it off in the menu.
 - **Noise handling**
   - Ignores recordings with no speech (taps, clicks, fidgeting) and shrinks long pauses.
   - Uses Apple's echo cancellation when sound plays from your speakers.
@@ -91,7 +96,7 @@ Normal phrases are left alone: "a new line of credit", "the bullet point is…",
   - Only your own dictated words are typed. Command Mode's AI-written text always pastes.
 - **Floating pill** at the bottom of the screen
   - Live sound bars while you talk, a wand in Command Mode, dots while it works, and small confirmations.
-- **Menu-bar settings:** AI cleanup, noise filter, built-in mic, mic mode (Voice Isolation), personal dictionary, snippets, Learn From My Edits, Type It Out and typing speed, sounds, launch at login, recent transcripts.
+- **Menu-bar settings:** AI cleanup, noise filter, built-in mic, mic mode (Voice Isolation), personal dictionary, snippets, Learn From My Edits, Press Enter Command, Type It Out and typing speed, sounds, launch at login, recent transcripts.
 
 ---
 
@@ -199,7 +204,7 @@ tests/run_all.sh mylabel     # builds a test version and runs every test; result
 ```
 
 - **Speech clips** are generated with macOS's built-in `say` voice. The first run may trigger macOS's one-time speech-model download.
-- **Self-test windows:** a few tests briefly open a small window that closes by itself. The typing test sends keystrokes only to its own window.
+- **Self-test windows:** a few tests briefly open a small window that closes by itself. The typing and press-enter tests send keystrokes only to their own window. The press-enter test briefly puts text on your clipboard and restores it.
 - **Test tools** (`--selftest`, `--mictest` and similar) exist only in test builds (`VERBALINE_TESTING=1 ./build.sh`), never in the installed app.
 
 ## Project layout
@@ -215,7 +220,7 @@ tests/run_all.sh mylabel     # builds a test version and runs every test; result
 | `src/TextPipeline.swift` | transcript → cleanup → dictionary → formatting → snippets |
 | `src/CommandMode.swift` | Command Mode rewriting and drafting |
 | `src/PersonalDictionary.swift`, `src/EditWatcher.swift`, `src/EditLearner.swift` | the dictionary and learning from your fixes |
-| `src/Snippets.swift`, `src/SpokenFormatting.swift` | snippets and spoken formatting |
+| `src/Snippets.swift`, `src/SpokenFormatting.swift`, `src/PressEnter.swift` | snippets, spoken formatting, and "press enter" |
 | `src/TextInserter.swift`, `src/TextTyper.swift`, `src/AXText.swift` | pasting, typing, and reading other apps' text boxes |
 | `src/Overlay.swift` | the floating pill |
 
