@@ -15,13 +15,18 @@ enum TextPipeline {
         // Taken off before cleanup so the AI can't reword or drop the command.
         let (raw, pressEnter) = pressEnterCommand ? PressEnter.split(raw) : (raw, false)
         guard !raw.isEmpty else { return Result(text: "", fixes: [], pressEnter: pressEnter) }
-        // Snippets and spoken formatting are exact by design. The AI could reword a trigger phrase or
-        // merge lines, so a dictation that uses either gets the rule cleanup only.
-        let exact = snippets.containsTrigger(raw) || SpokenFormatting.containsCommand(raw)
-        let cleaned = await cleaner.clean(raw, useLLM: useAI && !exact)
-        let marked = snippets.mark(cleaned)                      // triggers → placeholders nothing else touches
-        let spelled = dictionary.applyReporting(to: marked.text)
-        let formatted = SpokenFormatting.apply(spelled.text)
-        return Result(text: snippets.fill(formatted, marked.expansions), fixes: spelled.swaps, pressEnter: pressEnter)
+        // "spell H E L O C" → "HELOC" first, before cleanup can touch the letters.
+        let spelled = Spelling.apply(raw)
+        // Snippets, spoken formatting and spelled words are exact by design. The AI could reword a trigger
+        // phrase, merge lines or "fix" a spelling, so a dictation that uses any of them gets the rule cleanup only.
+        let exact = !spelled.words.isEmpty || snippets.containsTrigger(spelled.text)
+            || SpokenFormatting.containsCommand(spelled.text)
+        let cleaned = await cleaner.clean(spelled.text, useLLM: useAI && !exact)
+        let shielded = Spelling.shield(cleaned, spelled.words)   // spelled words → placeholders nothing else touches
+        let marked = snippets.mark(shielded.text)                // triggers → placeholders nothing else touches
+        let dictionaryFixes = dictionary.applyReporting(to: marked.text)
+        let formatted = SpokenFormatting.apply(dictionaryFixes.text)
+        let filled = Spelling.unshield(snippets.fill(formatted, marked.expansions), shielded.words)
+        return Result(text: filled, fixes: dictionaryFixes.swaps, pressEnter: pressEnter)
     }
 }

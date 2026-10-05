@@ -19,7 +19,8 @@ FLAGS=()
 
 # The app is assembled outside the source folder (cloud-synced folders add extended attributes that
 # codesign refuses), in a ".noindex" folder so Spotlight doesn't list a second copy of the app.
-OUT="$HOME/Library/Caches/Verbaline-build.noindex"
+# VERBALINE_BUILD_DIR lets a second checkout (a git worktree) build without overwriting this one's app.
+OUT="${VERBALINE_BUILD_DIR:-$HOME/Library/Caches/Verbaline-build.noindex}"
 APP="$OUT/Verbaline.app"
 
 rm -rf "$APP"

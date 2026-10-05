@@ -15,6 +15,9 @@ clip build/test_audio/email_newline.wav "Hi Sarah, new line. Thanks for sending 
 clip build/test_audio/bullets.wav "Here is what I need. Bullet point. Your last two pay stubs. Bullet point. Your bank statements."
 clip build/test_audio/snippet.wav "Thanks for your time. Insert test snippet."
 clip build/test_audio/new_line_of_loans.wav "We are launching a new line of loans next month."
+clip build/test_audio/spell_heloc.wav "Spell H E L O C."
+clip build/test_audio/spell_name.wav "Please email spell K E R G E R about the appraisal."
+clip build/test_audio/spell_paused.wav "Spell [[slnc 300]] N [[slnc 250]] M [[slnc 250]] L [[slnc 250]] S"
 
 # 2.7 s of silence
 [[ -f build/transcriber_test/silence.wav ]] || python3 - <<'PY'

@@ -45,9 +45,10 @@ Everything runs on your Mac. Speech recognition uses Apple's built-in **SpeechAn
 | "…**scratch that**" | removes what you said just before it |
 | "Delete that." (said on its own between sentences) | removes the sentence before it |
 | A snippet trigger, like "insert my signature" | pastes your saved text exactly |
+| "email **spell** K E R G E R about it" | "email Kerger about it": the letters become one word. 5 letters or fewer come out in capitals (HELOC, NMLS), 6 or more with a capital first letter. |
 | "**Press enter**" (said on its own, after you've checked your text) | presses Return, which sends the message in chat apps. "Press return" works too. At the end of a longer dictation it's just text, so nothing is ever sent before you've seen it. |
 
-Normal phrases are left alone: "a new line of credit", "the bullet point is…", "can you delete that?", "tell them to press enter". *AI cleanup* means Apple Intelligence is on and **AI Cleanup** is checked in the menu; everything else works without it.
+Normal phrases are left alone: "a new line of credit", "the bullet point is…", "can you delete that?", "can you spell that", "a dry spell", "tell them to press enter". *AI cleanup* means Apple Intelligence is on and **AI Cleanup** is checked in the menu; everything else works without it.
 
 ### Command Mode instructions (examples)
 
@@ -79,6 +80,10 @@ Normal phrases are left alone: "a new line of credit", "the bullet point is…",
   - Say a trigger phrase to paste exact saved text, such as a signature, disclaimer or link.
   - Neither the AI nor the dictionary ever touches it.
 - **Spoken formatting:** new line, new paragraph, bullets.
+- **Spell a word**
+  - Say "spell" and then the letters, for names and terms the speech engine doesn't know.
+  - Leave a tiny pause between letters. Rushed letters can be misheard ("age" for H, "in" for N).
+  - The spelled word skips the AI cleanup, and the dictionary can't change it.
 - **Press enter to send**
   - Dictate your message, check it, then hold fn and say just "press enter" to send it.
   - Verbaline never pastes and sends in one step, so a misheard word can't go out on its own.
@@ -220,7 +225,7 @@ tests/run_all.sh mylabel     # builds a test version and runs every test; result
 | `src/TextPipeline.swift` | transcript → cleanup → dictionary → formatting → snippets |
 | `src/CommandMode.swift` | Command Mode rewriting and drafting |
 | `src/PersonalDictionary.swift`, `src/EditWatcher.swift`, `src/EditLearner.swift` | the dictionary and learning from your fixes |
-| `src/Snippets.swift`, `src/SpokenFormatting.swift`, `src/PressEnter.swift` | snippets, spoken formatting, and "press enter" |
+| `src/Snippets.swift`, `src/SpokenFormatting.swift`, `src/PressEnter.swift`, `src/Spelling.swift` | snippets, spoken formatting, "press enter", and "spell" |
 | `src/TextInserter.swift`, `src/TextTyper.swift`, `src/AXText.swift` | pasting, typing, and reading other apps' text boxes |
 | `src/Overlay.swift` | the floating pill |
 

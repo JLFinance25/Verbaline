@@ -19,15 +19,16 @@ echo "▶ compiling"
 "${SW[@]}" src/AppleTranscriber.swift src/PersonalDictionary.swift tests/dictionary_test.swift -o "$BIN/dictionary_test" || exit 1
 "${SW[@]}" src/TextInserter.swift src/AXText.swift tests/clipboard_test.swift -o "$BIN/clipboard_test" || exit 1
 "${SW[@]}" src/TextCleaner.swift tests/text_fixes_test.swift -o "$BIN/text_fixes_test" || exit 1
-"${SW[@]}" src/TextCleaner.swift src/PersonalDictionary.swift src/Snippets.swift src/SpokenFormatting.swift src/PressEnter.swift \
+"${SW[@]}" src/TextCleaner.swift src/PersonalDictionary.swift src/Snippets.swift src/SpokenFormatting.swift src/PressEnter.swift src/Spelling.swift \
   src/TextPipeline.swift tests/formatting_test.swift -o "$BIN/formatting_test" || exit 1
 "${SW[@]}" src/EditWatcher.swift src/AXText.swift src/PersonalDictionary.swift tests/edit_watcher_test.swift -o "$BIN/edit_watcher_test" || exit 1
 "${SW[@]}" src/EditLearner.swift tests/edit_learner_test.swift -o "$BIN/edit_learner_test" || exit 1
 "${SW[@]}" src/CommandMode.swift tests/command_mode_test.swift -o "$BIN/command_mode_test" || exit 1
 "${SW[@]}" src/TextTyper.swift tests/typer_test.swift -o "$BIN/typer_test" || exit 1
 "${SW[@]}" src/PressEnter.swift tests/press_enter_test.swift -o "$BIN/press_enter_test" || exit 1
+"${SW[@]}" src/Spelling.swift tests/spelling_test.swift -o "$BIN/spelling_test" || exit 1
 VERBALINE_TESTING=1 ./build.sh > "$OUT/build.raw.txt" 2>&1 || { cat "$OUT/build.raw.txt"; exit 1; }
-APPDIR="$HOME/Library/Caches/Verbaline-build.noindex/Verbaline.app"
+APPDIR="${VERBALINE_BUILD_DIR:-$HOME/Library/Caches/Verbaline-build.noindex}/Verbaline.app"
 
 run() {
   local name=$1; shift
@@ -43,13 +44,15 @@ run edit_learner "$BIN/edit_learner_test"
 run command_mode "$BIN/command_mode_test"
 run typer "$BIN/typer_test"
 run press_enter "$BIN/press_enter_test"
+run spelling "$BIN/spelling_test"
 run cleaner "$BIN/cleaner_test" --prewarm
 run transcribe "$BIN/transcribe_test" build/transcriber_test/t1.wav build/transcriber_test/t2.wav \
   build/transcriber_test/t3.wav build/transcriber_test/silence.wav
 run gate env GATE_SEED=7 "$BIN/gate_test"
 run dictionary "$BIN/dictionary_test"
 run spoken "$APPDIR/Contents/MacOS/Verbaline" --selftest build/test_audio/email_newline.wav build/test_audio/bullets.wav \
-  build/test_audio/snippet.wav build/test_audio/new_line_of_loans.wav
+  build/test_audio/snippet.wav build/test_audio/new_line_of_loans.wav \
+  build/test_audio/spell_heloc.wav build/test_audio/spell_name.wav build/test_audio/spell_paused.wav
 run pipeline "$APPDIR/Contents/MacOS/Verbaline" --selftest build/gate_test/c_raw.wav build/gate_test/d_raw.wav \
   build/dictionary_test/c1.wav build/messy.wav build/transcriber_test/t3.wav build/transcriber_test/silence.wav
 

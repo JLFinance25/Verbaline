@@ -201,10 +201,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard beginRecording(pressedAt: fn.lastFnEventAt) else { return }
             mode = .pressed
             fnDownAt = ProcessInfo.processInfo.systemUptime
+            // Pill and chime right away: the mic is already recording, so you can start talking at once.
+            // (A tap or an fn+key shortcut turns out not to be dictation later and just hides the pill.)
+            announceListening(handsFree: false)
             holdTimer = Timer.scheduledTimer(withTimeInterval: tapMax, repeats: false) { [weak self] _ in
                 guard let self, self.mode == .pressed else { return }
                 self.mode = .pushToTalk
-                self.announceListening(handsFree: false)
             }
         case .awaitingSecondTap:
             // Second tap: keep the mic rolling and switch to hands-free.
@@ -311,7 +313,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard mode == .pressed || mode == .pushToTalk else { return }
         commandMode = true
         CommandMode.prewarm()
-        if mode == .pushToTalk { overlay.show(.listeningCommand) }   // already announced as dictation; switch the pill
+        overlay.show(.listeningCommand)   // already announced as dictation; switch the pill
     }
 
     private func announceListening(handsFree: Bool) {
