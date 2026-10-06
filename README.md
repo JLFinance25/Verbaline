@@ -6,13 +6,15 @@ Everything runs on your Mac. Speech recognition uses Apple's built-in **SpeechAn
 
 > A personal project shared as-is. It's built and tested on one Mac, so expect rough edges elsewhere. Issues and pull requests are welcome.
 
+> **Will it work on my Mac?** You need a Mac with an Apple chip (M1 or newer) running macOS 26 or newer. To check, click the Apple menu → **About This Mac**. There's no download yet: you build it yourself by pasting a few commands into Terminal (see [Install](#install)).
+
 ---
 
 ## Why Verbaline
 
 - **Private by design.** Your voice and your text are processed on your Mac and never sent to a server by Verbaline.
 - **Free and open source** (MIT). No word limits.
-- **Built for work where details matter.** A *number guard* stops the AI from adding, dropping, changing or reordering numbers you said, such as rates, amounts and dates.
+- **Built for work where details matter.** A *number guard* checks that the AI didn't add, drop, change or reorder numbers you said, such as rates, amounts and dates, and falls back to plain cleanup if it did.
 - **Command Mode included.** Rewrite or draft text by voice, on-device.
 - **It gets better as you use it.** Fix a misheard word once and Verbaline remembers it.
 - **Plays nicely with AirPods.** It records from your Mac's built-in mic, so your music keeps playing in high quality.
@@ -130,20 +132,32 @@ Sources: [pricing](https://wisprflow.ai/pricing), [data controls](https://wisprf
 
 ## Requirements
 
-- macOS 26 or later on Apple Silicon
-- Xcode Command Line Tools: `xcode-select --install`
+- A Mac with Apple Silicon (M1 or newer) running macOS 26 or later
+- Xcode Command Line Tools (free from Apple; step 2 below installs them)
 - English (US) speech
 - **Apple Intelligence** turned on, for AI cleanup and Command Mode. Basic dictation works without it.
 
 ## Install
 
-```bash
-git clone https://github.com/JLFinance25/Verbaline.git
-cd Verbaline
-./build.sh --install     # builds and installs /Applications/Verbaline.app, then starts it
-```
+1. **Open Terminal.** Press ⌘ Space, type `Terminal`, and press Return.
+2. **Install Apple's developer tools** (skip if you already have them). Paste this and press Return, then click **Install** in the window that appears and wait for it to finish:
+   ```bash
+   xcode-select --install
+   ```
+3. **Download and build Verbaline.** Paste this and press Return:
+   ```bash
+   git clone https://github.com/JLFinance25/Verbaline.git
+   cd Verbaline
+   ./build.sh --install     # builds and installs /Applications/Verbaline.app, then starts it
+   ```
+   A waveform icon appears in your menu bar when it's running.
 
-Then, in **System Settings → Privacy & Security**:
+### First-time setup
+
+1. When macOS asks for the **Microphone**, click **Allow**.
+2. Open **System Settings → Privacy & Security → Accessibility** and turn on **Verbaline**. If macOS asks for **Input Monitoring**, turn it on there too.
+3. Open **System Settings → Keyboard** and set **"Press 🌐 key to"** to **Do Nothing**. Otherwise fn opens the emoji picker instead of starting dictation.
+4. Click into any text box, hold **fn**, say a sentence, and let go. The first time can take a little longer while macOS downloads Apple's speech model.
 
 | Permission | Why |
 |---|---|
@@ -151,23 +165,46 @@ Then, in **System Settings → Privacy & Security**:
 | Accessibility | to see the fn key, paste or type text, read your selection (Command Mode), and read the text box you pasted into (learning) |
 | Input Monitoring | if macOS asks: to see the fn key |
 
-Also set **System Settings → Keyboard → "Press 🌐 key to" → Do Nothing**, so fn doesn't open the emoji picker.
+### Keep permissions across rebuilds (recommended)
 
-### Keep permissions across rebuilds (optional)
-
-Locally built apps are "ad-hoc" signed, so macOS forgets their permissions every time you rebuild. To avoid that, create a private signing certificate once:
+Apps you build yourself are "ad-hoc" signed, so macOS forgets their permissions every time you rebuild or update. To avoid that, run this once from the Verbaline folder:
 
 ```bash
-scripts/make-signing-identity.sh     # adds a self-signed code-signing certificate to your login keychain
+scripts/make-signing-identity.sh
 ```
 
-Then create `local.env` next to `build.sh`. It's git-ignored and read as plain `KEY=value` lines, never run as code.
+It creates a private certificate that can only sign apps on your Mac, saves it in your login keychain, and records its name in `local.env` (a settings file that stays on your Mac). It doesn't change any trust settings. Then run `./build.sh --install` again. The first build asks for keychain access to the certificate; choose **Always Allow**. To remove the certificate later, delete "Verbaline Local Signing" in Keychain Access.
+
+## Update
+
+In Terminal:
 
 ```bash
-VERBALINE_SIGN_IDENTITY="Verbaline Local Signing"
+cd Verbaline
+git pull
+./build.sh --install
 ```
 
-The first build asks for keychain access to the certificate. Approve it once.
+## Uninstall
+
+1. Click the menu-bar icon → **Quit Verbaline**.
+2. Drag **Verbaline** from Applications to the Trash.
+3. To remove your history, dictionary and snippets too, delete the folder `~/Library/Application Support/Verbaline` (in Finder: Go → Go to Folder…).
+4. Optional clean-up in Terminal: `defaults delete local.verbaline.app` removes its settings, and `tccutil reset All local.verbaline.app` removes its permissions. If you created the signing certificate, delete "Verbaline Local Signing" in Keychain Access.
+
+## Troubleshooting
+
+| What you see | What to do |
+|---|---|
+| Holding fn opens the emoji picker | Set **System Settings → Keyboard → "Press 🌐 key to" → Do Nothing**. |
+| Nothing happens when you hold fn | Check the menu-bar icon's menu. If it says "Needs Accessibility permission" or "Needs Input Monitoring permission", turn Verbaline on in **System Settings → Privacy & Security**. If it's already on, switch it off and on again. |
+| "Copied — turn on Accessibility for Verbaline to auto-paste" | Your text is on the clipboard; paste it with ⌘V. Turn on Accessibility (above) so it pastes by itself. |
+| macOS asks for permissions again after every update | Do the one-time [signing step](#keep-permissions-across-rebuilds-recommended). |
+| The menu says "AI Cleanup (Apple Intelligence unavailable…)" | Turn on Apple Intelligence in **System Settings → Apple Intelligence & Siri**. Apple Intelligence may not be available in every region or language. Basic dictation still works without it. |
+| The first dictation is slow or says "Loading speech model…" | macOS is downloading Apple's speech model. Wait a minute and try again. |
+| `./build.sh` fails with a compiler or SDK error | Install or update the Command Line Tools: run `xcode-select --install`, or check **System Settings → General → Software Update**. |
+
+Still stuck? [Open an issue](https://github.com/JLFinance25/Verbaline/issues) with your macOS version, what you did, and what happened.
 
 ---
 
@@ -178,7 +215,7 @@ The first build asks for keychain access to the certificate. Approve it once.
 - **The key watcher** sees every key press system-wide, but only looks at which key it was, to spot fn, Esc and fn+key shortcuts. It never records keystrokes.
 - **Password fields are skipped when the app marks them as password fields.** If you dictate into one, the text goes in but isn't saved to history or watched. Some apps, such as Chrome and Slack, don't tell macOS which box you're typing in, so Verbaline can't always tell. Don't dictate passwords.
 - **What's stored** in `~/Library/Application Support/Verbaline/` (a folder only your account can open):
-  - `history.jsonl`: your dictations and Command Mode results, in plain text, trimmed to the newest 2,000 entries once it passes 5,000. Delete it any time.
+  - `history.jsonl`: your dictations and Command Mode results, in plain text, trimmed to the newest 2,000 entries once it passes 5,000. Clear it any time from the menu: **Recent → Clear History…**
   - `dictionary.txt`: your words and learned fixes.
   - `snippets.txt`: your snippets.
   - `status.json`: permission and status flags, plus the name of the last app it watched. No transcripts or text.
@@ -190,7 +227,7 @@ The first build asks for keychain access to the certificate. Approve it once.
   - If an app doesn't share it, Verbaline presses ⌘C and then restores your clipboard. A clipboard manager you use may record that copy.
   - The selection goes only to Apple's on-device model.
 - **Apps like Chrome, Slack and Claude** only share their text boxes when asked. Verbaline asks with the standard `AXManualAccessibility` flag, the same mechanism screen readers use.
-- **Hardened runtime.** The app is built with macOS's hardened runtime, so other programs can't inject code into it and borrow its permissions.
+- **Hardened runtime.** The app is built with macOS's hardened runtime, which makes it much harder for other programs to inject code into it and borrow its permissions.
 
 See [SECURITY.md](SECURITY.md) for how to report a problem.
 
@@ -199,6 +236,8 @@ See [SECURITY.md](SECURITY.md) for how to report a problem.
 - **AI output can be wrong.** Proofread anything important, especially Command Mode drafts.
 - **The number guard has limits.** It checks numbers written in digits, not facts, claims, or numbers spelled out in words.
 - **Don't use it unsupervised for high-stakes advice.** That includes financial, legal and medical advice. Apple's terms for its on-device model apply.
+- **Not designed for regulated records.** History is saved as plain text on your Mac. Check your employer's rules before dictating client or customer information.
+- **No warranty.** Verbaline is provided as-is; see [LICENSE](LICENSE).
 
 ---
 
@@ -251,3 +290,5 @@ The starter dictionary leans toward US mortgage terms; edit `dictionary.txt` for
 ## License
 
 [MIT](LICENSE)
+
+Apple, Mac, macOS, AirPods and Apple Intelligence are trademarks of Apple Inc. Wispr Flow is a product of its owner. Other names belong to their owners. Verbaline is an independent project, not affiliated with or endorsed by any of them.

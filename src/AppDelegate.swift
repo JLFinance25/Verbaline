@@ -704,6 +704,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let open = NSMenuItem(title: "Open History File", action: #selector(openHistory), keyEquivalent: "")
         open.target = self
         sub.addItem(open)
+        let clear = NSMenuItem(title: "Clear History…", action: #selector(clearHistory), keyEquivalent: "")
+        clear.target = self
+        sub.addItem(clear)
         recent.submenu = sub
         menu.addItem(recent)
         menu.addItem(.separator())
@@ -842,6 +845,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openHistory() { NSWorkspace.shared.open(history.fileURL) }
+    @objc private func clearHistory() {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Clear all history?"
+        alert.informativeText = "This deletes every saved dictation and Command Mode result. Your dictionary and snippets stay."
+        alert.addButton(withTitle: "Clear History").hasDestructiveAction = true
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        history.clear()
+        overlay.flash("History cleared", seconds: 1.2)
+    }
     @objc private func toggleAI() { aiCleanup.toggle() }
     @objc private func toggleSounds() { soundsOn.toggle() }
     @objc private func toggleTypeOut() { typeOut.toggle() }

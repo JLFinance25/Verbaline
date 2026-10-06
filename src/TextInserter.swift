@@ -21,7 +21,7 @@ enum TextInserter {
     @discardableResult
     static func insert(_ text: String, smartSpace: Bool = true) -> Bool {
         guard AXIsProcessTrusted() else {
-            copyToClipboard(text)
+            copyToClipboard(text, transient: true)   // left for the user to paste; clipboard managers skip it
             return false
         }
         let toPaste = smartSpace && needsLeadingSpace() ? " " + text : text
@@ -39,10 +39,12 @@ enum TextInserter {
     /// " " when the cursor sits right after a word in the frontmost app, else "". (Used by typing mode.)
     static func leadingSpaceIfNeeded() -> String { needsLeadingSpace() ? " " : "" }
 
-    static func copyToClipboard(_ text: String) {
+    /// `transient`: mark it so clipboard managers don't record it (for dictation the user didn't ask to copy).
+    static func copyToClipboard(_ text: String, transient: Bool = false) {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)
+        if transient { pb.setString("", forType: transientType) }
     }
 
     /// The clipboard swap, kept apart from the keystroke so it can be tested on a private pasteboard.

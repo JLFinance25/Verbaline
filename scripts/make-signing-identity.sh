@@ -4,12 +4,26 @@
 #
 #   scripts/make-signing-identity.sh ["Certificate Name"]
 #
-# Then put VERBALINE_SIGN_IDENTITY="Certificate Name" in local.env. The first build may show a keychain
-# prompt for codesign; choose "Always Allow". To remove it later, delete the certificate in Keychain Access.
+# It also adds VERBALINE_SIGN_IDENTITY="Certificate Name" to local.env (next to build.sh), unless local.env
+# already names one. The first build may show a keychain prompt for codesign; choose "Always Allow".
+# It doesn't change any trust settings. To remove it later, delete the certificate in Keychain Access.
 set -euo pipefail
 NAME="${1:-Verbaline Local Signing}"
+ENV_FILE="$(cd "$(dirname "$0")/.." && pwd)/local.env"
+use_in_local_env() {
+  if [[ -f "$ENV_FILE" ]] && grep -q '^VERBALINE_SIGN_IDENTITY=' "$ENV_FILE"; then
+    echo "local.env already sets VERBALINE_SIGN_IDENTITY; left unchanged:"
+    grep '^VERBALINE_SIGN_IDENTITY=' "$ENV_FILE"
+  else
+    [[ -s "$ENV_FILE" && -n "$(tail -c1 "$ENV_FILE")" ]] && echo >> "$ENV_FILE"   # no trailing newline
+    echo "VERBALINE_SIGN_IDENTITY=\"$NAME\"" >> "$ENV_FILE"
+    echo "Added VERBALINE_SIGN_IDENTITY=\"$NAME\" to local.env."
+  fi
+}
 if security find-certificate -c "$NAME" >/dev/null 2>&1; then
-  echo "A certificate named \"$NAME\" already exists."; exit 0
+  echo "A certificate named \"$NAME\" already exists."
+  use_in_local_env
+  exit 0
 fi
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -31,5 +45,6 @@ PASS="$(/usr/bin/openssl rand -hex 16)"
 /usr/bin/openssl pkcs12 -export -inkey "$WORK/key.pem" -in "$WORK/cert.pem" -out "$WORK/id.p12" \
   -passout "pass:$PASS" -name "$NAME"
 security import "$WORK/id.p12" -k "$HOME/Library/Keychains/login.keychain-db" -P "$PASS"
-echo "Created \"$NAME\". Add this line to local.env:"
-echo "VERBALINE_SIGN_IDENTITY=\"$NAME\""
+echo "Created \"$NAME\" in your login keychain."
+use_in_local_env
+echo "Rebuild with ./build.sh --install; permissions will now survive rebuilds."

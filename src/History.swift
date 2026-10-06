@@ -27,6 +27,12 @@ final class History {
 
     var last: HistoryEntry? { items.first }
 
+    /// Deletes every saved entry (the file and the in-memory list). The dictionary and snippets stay.
+    func clear() {
+        items.removeAll()
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+
     func add(_ t: HistoryEntry) {
         items.insert(t, at: 0)
         if items.count > 200 { items.removeLast(items.count - 200) }

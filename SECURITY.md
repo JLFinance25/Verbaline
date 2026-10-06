@@ -30,5 +30,5 @@ Verbaline asks for powerful permissions, so here is exactly what it does with th
 ## Known limitations
 
 - **Command Mode:** passes selected text to an on-device language model. Text that contains instructions is usually treated as content, not obeyed, but this is not guaranteed. The model has no tools and no network access, and its output only replaces your selection, so ⌘Z undoes it.
-- **History:** `history.jsonl` keeps dictations and Command Mode results in plain text until you delete it, or until it's trimmed to the newest 2,000 entries.
+- **History:** `history.jsonl` keeps dictations and Command Mode results in plain text until you clear it (menu: **Recent → Clear History…**), or until it's trimmed to the newest 2,000 entries.
 - **Clipboard copy:** when Command Mode falls back to ⌘C, a clipboard manager may record the copied selection.
