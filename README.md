@@ -12,11 +12,31 @@ Everything runs on your Mac. Speech recognition uses Whisper (large-v3-turbo, th
 
 ## Why Verbaline
 
+- **Free, with no limits.** No subscription, no word cap, no account, no ads.
 - **Private by design.** Your voice and your text are processed on your Mac and never sent to a server by Verbaline.
-- **Free and open source** (MIT).
+- **Open source** (MIT). You can read every line of what runs on your Mac.
 - **A number guard.** When AI cleanup rewrites your dictation, the result is rejected if it changes, adds or drops a number you said (unless you corrected yourself, like "2, actually 3"). Command Mode has its own guard: a number in the output must already be in the selected text or your instruction.
 - **Command Mode included.** Rewrite or draft text by voice, on-device.
 - **It gets better as you use it.** Fix a misheard word once and Verbaline can remember it.
+
+### How it compares with Wispr Flow
+
+Verbaline was inspired by [Wispr Flow](https://wisprflow.ai), a polished commercial dictation app, and works in a similar way: hold a key, talk, and cleaned-up text appears. It is a separate project built from scratch and is not affiliated with Wispr. Details about Wispr Flow below come from its own [pricing page](https://wisprflow.ai/pricing) and [privacy policy](https://wisprflow.ai/privacy-policy), checked in October 2026; they may have changed since.
+
+| | Verbaline | Wispr Flow |
+|---|---|---|
+| **Price** | Free, unlimited | Free plan up to 2,000 words a week on desktop; Pro is $12 per user per month for unlimited use |
+| **Where your speech is processed** | On your Mac. Nothing you say or type is sent anywhere | Its privacy policy says it collects your audio inputs and uses service providers that include third-party AI and cloud providers |
+| **Platforms** | Mac with an Apple chip, macOS 26 or newer | Mac, Windows, iPhone and Android |
+| **Languages** | English | 100+ |
+| **Setup** | You build it yourself (a few Terminal commands, or let an AI assistant do it) | Download from its website |
+| **Teams and support** | None: a personal project shared as-is | Team plans, admin controls, customer support, SOC 2 and ISO 27001 |
+
+If you need Windows or phones, other languages, team features or support, Wispr Flow is the better fit. If you want dictation that's free, unlimited and stays on your Mac, try Verbaline.
+
+### Why is it free?
+
+Because there's nothing to pay for. Verbaline has no servers: the speech engine ([Whisper](https://github.com/openai/whisper), released free by OpenAI and run through the open-source whisper.cpp) and the cleanup AI (Apple's on-device model, built into macOS) both run on your own Mac. With no servers, there are no running costs to pass on, no account to manage and no data to sell. It's shared under the MIT license, so it's free to use, change and pass on.
 
 ---
 
@@ -123,6 +143,33 @@ Turn the setting off if you want the opposite, for example to transcribe a video
 - **Apple Intelligence** turned on, for AI cleanup, Command Mode and "make this prompt better". Basic dictation works without it.
 
 ## Install
+
+### Install with an AI assistant (easiest)
+
+If you use an AI assistant that can run commands on your Mac, such as [Claude Code](https://claude.com/claude-code), paste the prompt below into it and it will do the setup for you. A chat-only assistant (one that can't run commands) can still walk you through the steps below one at a time.
+
+```text
+Please install Verbaline for me, a free on-device dictation app for macOS: https://github.com/JLFinance25/Verbaline
+
+Before you start, check that this Mac has an Apple chip (M1 or newer) and macOS 26 or newer. If it doesn't, stop and tell me.
+Explain each step in plain English and ask me before installing anything.
+
+1. Make sure Apple's command line tools are installed (xcode-select --install) and that Homebrew is installed (https://brew.sh). Ask before installing either one.
+2. Run: brew install whisper-cpp
+3. Download the code with git clone https://github.com/JLFinance25/Verbaline.git into my home folder, then cd into it.
+4. Run scripts/make-signing-identity.sh so macOS remembers Verbaline's permissions. If a keychain prompt about codesign appears, tell me to click "Always Allow".
+5. Run ./build.sh --install
+6. Then guide me through these, one at a time, waiting for me after each:
+   - click the new Verbaline icon in the menu bar and click "Download the speech model" (1.6 GB, one time)
+   - allow the Microphone when asked
+   - turn on Verbaline in System Settings > Privacy & Security > Accessibility, and in Input Monitoring
+   - in System Settings > Keyboard, set "Press globe key to" to "Do Nothing", if that option exists
+7. Finally, have me click in a text box, hold fn, say a sentence, and let go. Confirm it worked.
+
+If any step fails, show me the error and explain it before trying anything else. Don't change any system settings yourself.
+```
+
+### Install it yourself
 
 1. **Open Terminal.** Press Command-Space, type `Terminal`, and press Return.
 2. **Install Apple's developer tools** (skip if you already have them), then click **Install** in the window that appears:
