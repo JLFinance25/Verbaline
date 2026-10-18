@@ -175,6 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         meetings.onNotice = { [weak self] text in self?.overlay.flash(text, seconds: 2) }
         if meetingNotesEnabled { meetings.start() }   // watches for meetings; asks before recording anything
+        updates.start { [weak self] in if self?.panelWindow?.isShown == true { self?.refreshPanel() } }
 
         // ⌃⌘V pastes the last transcript, ⌃⌘C copies it.
         hotKeys = [
@@ -391,6 +392,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     static let modelMissing = "Speech model not downloaded"
     static let copiedNoBox = "Copied — no text box selected. Press ⌘V to paste"
     private let downloader = ModelDownloader()
+    private let updates = UpdateChecker()
+
+    /// Explains the update and copies the one-line update command (or a prompt for an AI assistant).
+    private func showUpdate(_ version: String) {
+        let alert = NSAlert()
+        alert.messageText = "Verbaline \(version) is available"
+        alert.informativeText = """
+            You have version \(UpdateChecker.current). To update, paste one command into Terminal: it downloads the \
+            new version, installs it, and deletes the leftover files. Your word list, history, snippets and speech \
+            model are kept.
+
+            Or let an AI assistant that can run commands on your Mac (like Claude Code) do it for you.
+            """
+        alert.addButton(withTitle: "Copy Command and Open Terminal")
+        alert.addButton(withTitle: "Copy Prompt for My AI")
+        alert.addButton(withTitle: "Not Now")
+        NSApp.activate(ignoringOtherApps: true)
+        let choice = alert.runModal()
+        guard choice != .alertThirdButtonReturn else { return }
+        NSPasteboard.general.clearContents()
+        if choice == .alertFirstButtonReturn {
+            NSPasteboard.general.setString(UpdateChecker.installCommand, forType: .string)
+            if let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") {
+                NSWorkspace.shared.openApplication(at: terminal, configuration: .init())
+            }
+            overlay.flash("Copied — press ⌘V in Terminal, then Return", seconds: 4)
+        } else {
+            NSPasteboard.general.setString(UpdateChecker.aiPrompt, forType: .string)
+            overlay.flash("Copied — paste it into your AI assistant", seconds: 3)
+        }
+    }
+
+    @objc private func checkForUpdatesNow() {
+        updates.checkNow { [weak self] latest in
+            guard let self else { return }
+            if let latest, UpdateChecker.isNewer(latest, than: UpdateChecker.current) {
+                self.showUpdate(latest)
+            } else {
+                let alert = NSAlert()
+                alert.messageText = latest == nil ? "Couldn't reach GitHub" : "Verbaline is up to date"
+                alert.informativeText = latest == nil ? "Check your internet connection and try again."
+                                                      : "You have the newest version (\(UpdateChecker.current))."
+                NSApp.activate(ignoringOtherApps: true)
+                alert.runModal()
+            }
+        }
+    }
+
+    @objc private func toggleUpdateChecks() { updates.enabled.toggle() }
+    @objc private func showAvailableUpdate() { if let v = updates.available { showUpdate(v) } }
 
     private func loadSpeechModel() {
         engineStatus = "Loading speech model…"
@@ -988,6 +1039,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else if engineStatus.hasPrefix("Downloading") {
             warnings.insert(.init(id: "model", text: engineStatus + " — you can keep working") {}, at: 0)
         }
+        if let v = updates.available {
+            warnings.append(.init(id: "update", text: "Verbaline \(v) is available — click to update", isUpdate: true) {
+                [weak self] in self?.closePanel(); self?.showUpdate(v)
+            })
+        }
         panel.warnings = warnings
 
         switch mode {
@@ -997,7 +1053,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             panel.status = .working; panel.statusText = "Working"
         default:
             if engineStatus == "Ready" {
-                panel.status = warnings.contains { $0.id != "wispr" } ? .needsSetup : .ready
+                panel.status = warnings.contains { $0.id != "wispr" && !$0.isUpdate } ? .needsSetup : .ready
                 panel.statusText = panel.status == .ready ? "Ready" : "Needs setup"
             } else if engineStatus.hasPrefix("Loading") || engineStatus.hasPrefix("Downloading") {
                 panel.status = .loading; panel.statusText = engineStatus.hasPrefix("Loading") ? "Loading" : "Downloading"
@@ -1220,6 +1276,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         login.target = self
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(login)
+
+        menu.addItem(.separator())
+        if let v = updates.available {
+            let upd = NSMenuItem(title: "Update to Verbaline \(v)…", action: #selector(showAvailableUpdate), keyEquivalent: "")
+            upd.target = self
+            menu.addItem(upd)
+        }
+        let check = NSMenuItem(title: "Check for Updates…  (you have \(UpdateChecker.current))",
+                               action: #selector(checkForUpdatesNow), keyEquivalent: "")
+        check.target = self
+        menu.addItem(check)
+        let daily = NSMenuItem(title: "Check for Updates Daily (reads the version number from GitHub)",
+                               action: #selector(toggleUpdateChecks), keyEquivalent: "")
+        daily.target = self
+        daily.state = updates.enabled ? .on : .off
+        menu.addItem(daily)
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit Verbaline", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))

@@ -12,7 +12,7 @@ import SwiftUI
 final class PanelModel: ObservableObject {
     enum Status { case loading, ready, listening, working, needsSetup }
 
-    struct Warning: Identifiable { let id: String; let text: String; let fix: () -> Void }
+    struct Warning: Identifiable { let id: String; let text: String; var isUpdate = false; let fix: () -> Void }
     struct Toggle: Identifiable { let id: String; let label: String; let icon: String; var on: Bool }
 
     @Published var status: Status = .loading
@@ -172,13 +172,14 @@ struct PanelView: View {
     private func warningRow(_ w: PanelModel.Warning) -> some View {
         Button(action: w.fix) {
             HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.red)
+                Image(systemName: w.isUpdate ? "arrow.down.circle.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(w.isUpdate ? Theme.teal : Theme.red)
                 Text(w.text).font(.system(size: 12)).multilineTextAlignment(.leading)
                 Spacer()
                 Image(systemName: "chevron.right").font(.system(size: 10)).foregroundStyle(Theme.dim)
             }
             .padding(12)
-            .background(Theme.red.opacity(0.14), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
+            .background((w.isUpdate ? Theme.teal : Theme.red).opacity(0.14), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

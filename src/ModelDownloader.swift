@@ -4,8 +4,8 @@ import CryptoKit
 // ModelDownloader
 // ---------------
 // First launch only: fetches the Whisper speech model (1.62 GB) into Verbaline's own folder, when the user
-// clicks "Download speech model" in the panel. This is the one time Verbaline uses the network; nothing about
-// you is sent, it's a plain file download from the whisper.cpp project's Hugging Face page.
+// clicks "Download speech model" in the panel. One of Verbaline's two network uses (the other is UpdateChecker's
+// daily version check); nothing about you is sent, it's a plain file download from the whisper.cpp project's Hugging Face page.
 //
 // The file is checked before it's used: exact size and SHA-256 must match the published model, so a cut-off
 // or altered download is thrown away instead of loaded.

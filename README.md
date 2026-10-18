@@ -6,7 +6,7 @@
 
 **Private, on-device voice dictation for macOS.** Hold **fn**, talk, let go, and your words appear wherever your cursor is: cleaned up, punctuated and formatted. Highlight text and hold **fn + Control** to rewrite it by voice.
 
-Everything runs on your Mac. Speech recognition uses Whisper (large-v3-turbo, through whisper.cpp), and cleanup and rewriting use Apple's on-device model. Verbaline needs no account and has no subscription. Its only network use is a one-time download of the speech model (see [Privacy](#privacy)).
+Everything runs on your Mac. Speech recognition uses Whisper (large-v3-turbo, through whisper.cpp), and cleanup and rewriting use Apple's on-device model. Verbaline needs no account and has no subscription. It goes online only to download the speech model once and, unless you turn it off, to check once a day whether a newer version is out (see [Privacy](#privacy)).
 
 **Lives in your menu bar.** No dashboard window to keep open and no account: a small pill shows while you talk, and one click on the menu bar icon shows everything else.
 
@@ -185,16 +185,14 @@ Before you start, check that this Mac has an Apple chip (M1 or newer) and macOS 
 Explain each step in plain English and ask me before installing anything.
 
 1. Make sure Apple's command line tools are installed (xcode-select --install) and that Homebrew is installed (https://brew.sh). Ask before installing either one.
-2. Run: brew install whisper-cpp
-3. Download the code with git clone https://github.com/JLFinance25/Verbaline.git into my home folder, then cd into it.
-4. Run scripts/make-signing-identity.sh so macOS remembers Verbaline's permissions. If a keychain prompt about codesign appears, tell me to click "Always Allow".
-5. Run ./build.sh --install
-6. Then guide me through these, one at a time, waiting for me after each:
+2. Run this command. It installs the speech engine (whisper-cpp), sets up signing so macOS remembers Verbaline's permissions, then builds and installs Verbaline: /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/JLFinance25/Verbaline/main/scripts/install.sh)"
+   If a keychain prompt about codesign appears, tell me to click "Always Allow".
+3. Then guide me through these, one at a time, waiting for me after each:
    - click the new Verbaline icon in the menu bar and click "Download the speech model" (1.6 GB, one time)
    - allow the Microphone when asked
    - turn on Verbaline in System Settings > Privacy & Security > Accessibility, and in Input Monitoring
    - in System Settings > Keyboard, set "Press globe key to" to "Do Nothing", if that option exists
-7. Finally, have me click in a text box, hold fn, say a sentence, and let go. Confirm it worked.
+4. Finally, have me click in a text box, hold fn, say a sentence, and let go. Confirm it worked.
 
 If any step fails, show me the error and explain it before trying anything else. Don't change any system settings yourself.
 ```
@@ -206,16 +204,12 @@ If any step fails, show me the error and explain it before trying anything else.
    ```bash
    xcode-select --install
    ```
-3. **Install the speech engine** with Homebrew:
+3. **Install Homebrew** from [brew.sh](https://brew.sh) if you don't have it.
+4. **Install Verbaline** with one command:
    ```bash
-   brew install whisper-cpp
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/JLFinance25/Verbaline/main/scripts/install.sh)"
    ```
-4. **Download and build Verbaline:**
-   ```bash
-   git clone https://github.com/JLFinance25/Verbaline.git
-   cd Verbaline
-   ./build.sh --install     # builds, installs /Applications/Verbaline.app, and starts it
-   ```
+   It installs the speech engine (whisper-cpp), sets up signing so macOS remembers Verbaline's permissions (if a keychain window asks about `codesign`, click **Always Allow**), builds Verbaline into a temporary folder, installs it in Applications, starts it, and deletes the temporary folder. You can [read the script](scripts/install.sh) first.
 5. **Download the speech model.** A waveform icon appears in your menu bar. Click it, then click the **Download the speech model** prompt. This is a one-time 1.6 GB download into `~/Library/Application Support/Verbaline/models/`. Verbaline checks the file's size and SHA-256 fingerprint and only uses it if both match. You can keep working while it downloads.
 
 The first dictation can take a little longer while the model loads.
@@ -236,7 +230,9 @@ The first dictation can take a little longer while the model loads.
 
 Only run one dictation app at a time: two apps that both use fn will trigger each other.
 
-### Keep permissions across rebuilds (recommended)
+### Keep permissions across rebuilds
+
+The install command does this for you. Read on only if you build from your own `git clone`.
 
 Apps you build yourself are "ad-hoc" signed, so macOS forgets their permissions every time you rebuild or update. To avoid that, run this once from the Verbaline folder:
 
@@ -256,13 +252,19 @@ Optional: `local.env` can also contain `VERBALINE_BUNDLE_ID="your.id"` to change
 
 ## Update
 
-```bash
-cd Verbaline
-git pull
-./build.sh --install
-```
+Verbaline checks once a day whether a newer version is out. When one is, the menu bar panel shows **Update available**. Click it, then either:
 
-If you ran `brew upgrade whisper-cpp`, run `./build.sh --install` again. Verbaline uses Homebrew's copy of the speech engine, so it needs a rebuild after that upgrade.
+- **Copy Command and Open Terminal:** paste with Command-V and press Return. It's the same command as the install:
+  ```bash
+  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/JLFinance25/Verbaline/main/scripts/install.sh)"
+  ```
+- **Copy Prompt for My AI:** paste it into an assistant that can run commands on your Mac, like Claude Code, and it runs the update for you.
+
+The update keeps your word list, history, snippets and speech model. If you installed Verbaline the old way (a `Verbaline` folder in your home folder made with `git clone`), the update moves that folder to the Trash because it's no longer needed. Its signing settings are kept.
+
+You can also check by hand from the menu: **Check for Updates…**. To stop the daily check, turn off **Check for Updates Daily**.
+
+If you ran `brew upgrade whisper-cpp`, run the update command again. Verbaline uses Homebrew's copy of the speech engine, so it needs a rebuild after that upgrade.
 
 ## Uninstall
 
@@ -279,12 +281,12 @@ If you ran `brew upgrade whisper-cpp`, run `./build.sh --install` again. Verbali
 | The panel says "Download the speech model" | Click it. The model is a one-time 1.6 GB download. |
 | The download fails, or says it was incomplete or "didn't match the real model" | Verbaline throws away files that fail its size and SHA-256 check. Check your connection and click the prompt to try again. |
 | Nothing happens when you hold fn | Open the menu bar icon (right-click for the full menu). If it shows a warning like "Needs Input Monitoring permission" or "Needs Accessibility permission", turn Verbaline on under **System Settings, Privacy & Security**. If it is already on, switch it off and on again. |
-| The status says "Speech model error" | Make sure `brew install whisper-cpp` finished, then rebuild with `./build.sh --install`. If the model download was interrupted, delete `~/Library/Application Support/Verbaline/models/` and download it again from the panel. |
-| It stopped working after `brew upgrade` | Rebuild: `./build.sh --install`. |
+| The status says "Speech model error" | Make sure `brew install whisper-cpp` finished, then run the [install command](#update) again. If the model download was interrupted, delete `~/Library/Application Support/Verbaline/models/` and download it again from the panel. |
+| It stopped working after `brew upgrade` | Run the [install command](#update) again. |
 | The menu says AI Cleanup is unavailable | Turn on Apple Intelligence in **System Settings, Apple Intelligence & Siri**. Basic dictation still works without it. |
 | Words from music or a video show up in your dictation | See [Ignore Mac audio](#ignore-mac-audio): lower the speaker level, use headphones, or turn the music down. |
 | "Make this prompt better" pasted your words unchanged | The pill tells you why (for example "Apple Intelligence is off" or "The AI took too long"). Try a shorter request. |
-| macOS asks for permissions again after every update | Do the one-time [signing step](#keep-permissions-across-rebuilds-recommended). |
+| macOS asks for permissions again after every update | Update with the [install command](#update), which sets up signing. If you build from your own clone, see [Keep permissions across rebuilds](#keep-permissions-across-rebuilds). |
 | `./build.sh` fails with a compiler or SDK error | Install or update the Command Line Tools with `xcode-select --install`, or check **System Settings, General, Software Update**. |
 
 Still stuck? [Open an issue](https://github.com/JLFinance25/Verbaline/issues) with your macOS version, what you did, and what happened.
@@ -294,7 +296,8 @@ Still stuck? [Open an issue](https://github.com/JLFinance25/Verbaline/issues) wi
 ## Privacy
 
 - **Audio is not saved.** Your voice is held in memory while you speak and then discarded. Verbaline's normal code never writes audio to disk. The only code that writes audio files is in test-only builds, which are not part of a normal `./build.sh`.
-- **One network use: the speech model download.** The first time you launch Verbaline, the menu bar panel offers a one-time download (1.6 GB) of the Whisper model from Hugging Face (`huggingface.co/ggerganov/whisper.cpp`). It only starts when you click, and it is a plain file download: Verbaline sends nothing about you. This is the only time Verbaline uses the network. Once the model is saved, Whisper and Apple's model both run on your Mac, and Verbaline does not send your audio or text anywhere.
+- **Network use 1: the speech model download.** The first time you launch Verbaline, the menu bar panel offers a one-time download (1.6 GB) of the Whisper model from Hugging Face (`huggingface.co/ggerganov/whisper.cpp`). It only starts when you click, and it is a plain file download: Verbaline sends nothing about you. Once the model is saved, Whisper and Apple's model both run on your Mac, and Verbaline does not send your audio or text anywhere.
+- **Network use 2: a daily update check.** Once a day, Verbaline reads one public file from this GitHub repository (`Info.plist`) to see the newest version number. Nothing about you or your dictation is sent; GitHub sees the request like any web page visit, including your internet address. Turn it off in the menu with **Check for Updates Daily**.
 - **What is stored** in `~/Library/Application Support/Verbaline/` for dictation: the speech model (`models/`), your history (`history.jsonl`, plain text; clear it any time from the menu), your word list (`dictionary.txt`), your snippets (`snippets.txt`), `stats.json` (counts of words, seconds and dictations per day, never dictation text), `status.json` (permission and engine status flags, no transcript text), and `panel-placement.txt` (a small log of where the panel opened on your screens).
 - **Password fields.** You can dictate into a password field, but Verbaline does not save that dictation to your history, and does not watch the field for edits. Still, avoid dictating passwords.
 - **Learn From My Edits** watches the text box you pasted into for about a minute after a paste. It reads only that box through Accessibility, skips password fields, and keeps only the pasted region.
