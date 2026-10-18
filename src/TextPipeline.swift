@@ -8,12 +8,18 @@ enum TextPipeline {
         let fixes: [(from: String, to: String)]
         /// The dictation ended with "press enter": press Return after inserting `text` (which may be empty).
         var pressEnter = false
+        /// The dictation ended with "make this prompt better": rewrite `text` as a prompt before pasting.
+        var improvePrompt = false
     }
 
     static func finish(_ raw: String, useAI: Bool, cleaner: TextCleaner,
-                       dictionary: PersonalDictionary, snippets: Snippets, pressEnterCommand: Bool = false) async -> Result {
+                       dictionary: PersonalDictionary, snippets: Snippets, pressEnterCommand: Bool = false,
+                       promptCommand: Bool = false) async -> Result {
         // Taken off before cleanup so the AI can't reword or drop the command.
-        let (raw, pressEnter) = pressEnterCommand ? PressEnter.split(raw) : (raw, false)
+        let (afterEnter, pressEnter) = pressEnterCommand ? PressEnter.split(raw) : (raw, false)
+        // "…make this prompt better" comes off before cleanup too, so the AI can't reword the trigger.
+        let (raw, improvePrompt) = promptCommand && !pressEnter ? PromptBoost.split(afterEnter) : (afterEnter, false)
+        if improvePrompt && raw.isEmpty { return Result(text: "", fixes: [], improvePrompt: true) }
         guard !raw.isEmpty else { return Result(text: "", fixes: [], pressEnter: pressEnter) }
         // "spell H E L O C" → "HELOC" first, before cleanup can touch the letters.
         let spelled = Spelling.apply(raw)
@@ -27,6 +33,6 @@ enum TextPipeline {
         let dictionaryFixes = dictionary.applyReporting(to: marked.text)
         let formatted = SpokenFormatting.apply(dictionaryFixes.text)
         let filled = Spelling.unshield(snippets.fill(formatted, marked.expansions), shielded.words)
-        return Result(text: filled, fixes: dictionaryFixes.swaps, pressEnter: pressEnter)
+        return Result(text: filled, fixes: dictionaryFixes.swaps, pressEnter: pressEnter, improvePrompt: improvePrompt)
     }
 }

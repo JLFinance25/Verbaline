@@ -2,6 +2,9 @@ import Cocoa
 import AVFoundation
 import ApplicationServices
 
+// First, before any settings file is opened: bring over data saved under the app's old working name.
+VerbalinePaths.migrateFromOldName()
+
 // Self-test: `Verbaline --selftest a.wav [b.wav …]` runs the full speech → text → cleanup
 // pipeline on audio files and prints the results, without the UI or any hotkeys.
 #if VERBALINE_TESTING   // self-test modes exist only in test builds (VERBALINE_TESTING=1 ./build.sh)
@@ -28,7 +31,7 @@ if args.count > 2, args[1] == "--selftest" {
         return Array(UnsafeBufferPointer(start: out.floatChannelData![0], count: Int(out.frameLength)))
     }
 
-    let transcriber = AppleTranscriber()
+    let transcriber = WhisperEngine()
     let cleaner = TextCleaner()
     let dictionary = PersonalDictionary(fileURL: FileManager.default.temporaryDirectory
         .appendingPathComponent("verbaline-selftest-dictionary.txt"))
@@ -53,8 +56,14 @@ if args.count > 2, args[1] == "--selftest" {
                 }
                 let raw = try await transcriber.transcribe(samples: gate.samples, sampleRate: AudioRecorder.sampleRate)
                 let t2 = Date()
-                let result = await TextPipeline.finish(raw, useAI: true, cleaner: cleaner,
-                                                       dictionary: dictionary, snippets: snippets)
+                var result = await TextPipeline.finish(raw, useAI: true, cleaner: cleaner,
+                                                       dictionary: dictionary, snippets: snippets, promptCommand: true)
+                if result.improvePrompt {
+                    switch await PromptBoost.improve(result.text) {
+                    case .improved(let better): result = TextPipeline.Result(text: "[prompt improved] " + better, fixes: result.fixes)
+                    case .keptAsSaid(let why): result = TextPipeline.Result(text: "[kept as said: \(why)] " + result.text, fixes: result.fixes)
+                    }
+                }
                 let cleaned = result.text + (result.fixes.isEmpty ? "" : "   [fixed: "
                     + result.fixes.map { "\($0.from) → \($0.to)" }.joined(separator: ", ") + "]")
                 let t3 = Date()
@@ -72,6 +81,79 @@ if args.count > 2, args[1] == "--selftest" {
         finished = true
     }
     while !finished { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+    transcriber.unload()
+    exit(0)
+}
+
+// Speaker leak test: `open -W -n Verbaline.app --args --leaktest out.json clip.wav`
+// Plays clip.wav out loud while recording the built-in mic as-is (no echo cancellation), then runs the
+// recording through the same speech gate and Whisper as a dictation. Any words in "text" = the speakers
+// leaked into the dictation. Set the system volume before running it to test a ducked level.
+if args.count > 3, args[1] == "--leaktest" {
+    let recorder = AudioRecorder()
+    recorder.noiseReduction = false
+    recorder.preferBuiltInMic = true
+    var report: [String: Any] = [:]
+    do {
+        let clip = URL(fileURLWithPath: args[3])
+        let seconds = Double(try AVAudioFile(forReading: clip).length) / 16_000 + 0.6
+        let tap = SystemAudioTap()
+        if ProcessInfo.processInfo.environment["LEAK_NO_TAP"] == nil {
+            do { try tap.start() } catch { report["tapError"] = error.localizedDescription }
+        }
+        try recorder.start()
+        let player = Process()
+        player.executableURL = URL(fileURLWithPath: "/usr/bin/afplay")
+        player.arguments = [clip.path]
+        try player.run()
+        RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+        let samples = recorder.stop()
+        let reference = tap.stop()
+        report["referenceSeconds"] = Double(reference.count) / 16_000
+        report["micStartedAt"] = recorder.firstBufferAt ?? -1
+        report["tapStartedAt"] = tap.startedAt ?? -1
+        player.terminate()
+        func saveWav(_ x: [Float], _ path: String) {
+            guard let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false),
+                  let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(max(x.count, 1))),
+                  let file = try? AVAudioFile(forWriting: URL(fileURLWithPath: path), settings: fmt.settings) else { return }
+            buf.frameLength = AVAudioFrameCount(x.count)
+            x.withUnsafeBufferPointer { if let b = $0.baseAddress { buf.floatChannelData![0].update(from: b, count: x.count) } }
+            try? file.write(from: buf)
+        }
+        saveWav(reference, args[2] + ".ref.wav")
+        // Keep the raw mic recording (16 kHz mono float WAV) next to the report, for offline mixing tests.
+        if let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false),
+           let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(samples.count)),
+           let file = try? AVAudioFile(forWriting: URL(fileURLWithPath: args[2] + ".wav"), settings: fmt.settings) {
+            buf.frameLength = AVAudioFrameCount(samples.count)
+            samples.withUnsafeBufferPointer { buf.floatChannelData![0].update(from: $0.baseAddress!, count: samples.count) }
+            try? file.write(from: buf)
+        }
+        let rms = samples.isEmpty ? 0 : (samples.reduce(0) { $0 + $1 * $1 } / Float(samples.count)).squareRoot()
+        let gate = SpeechGate.process(samples, sampleRate: AudioRecorder.sampleRate)
+        report["usingBuiltInMic"] = recorder.usingBuiltInMic
+        report["rmsDb"] = 20 * log10(max(rms, 1e-9))
+        report["gateHeardSpeech"] = gate.hasSpeech
+        report["gateSeconds"] = gate.outputSeconds
+        var text = ""
+        if gate.hasSpeech {
+            let engine = WhisperEngine()
+            var done = false
+            Task.detached {
+                text = (try? await engine.transcribe(samples: gate.samples, sampleRate: AudioRecorder.sampleRate)) ?? "ERROR"
+                engine.unload()
+                done = true
+            }
+            while !done { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        }
+        report["text"] = text
+    } catch {
+        report["error"] = "\(error)"
+    }
+    if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+        try? data.write(to: URL(fileURLWithPath: args[2]))
+    }
     exit(0)
 }
 
@@ -111,6 +193,40 @@ if args.count > 2, args[1] == "--mictest" {
     }
     if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
         try? data.write(to: URL(fileURLWithPath: args[2]))
+    }
+    exit(0)
+}
+
+// Panel preview: `Verbaline --renderpanel dir [dark]` writes PNGs of the menu bar panel in a few states (no window).
+if args.count > 2, args[1] == "--renderpanel" {
+    let dir = URL(fileURLWithPath: args[2], isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    func sample(_ status: PanelModel.Status, _ text: String) -> PanelModel {
+        let m = PanelModel()
+        m.status = status; m.statusText = text
+        m.wordsToday = 1240; m.lastSpeed = 0.42
+        m.lastText = "Send the disclosure to Sarah and cc the processor."
+        m.lastDate = Date().addingTimeInterval(-120)
+        m.recent = ["Send the disclosure to Sarah and cc the processor.", "The rate is 6.75% on a 30-year fixed.",
+                    "Tell Gwendolyn her NMLS number is wrong on the Loan Estimate, and ask Kwabena for the W-2 and the last two months of statements."]
+        m.toggles = [.init(id: "ai", label: "AI cleanup", icon: "sparkles", on: true),
+                     .init(id: "sounds", label: "Sounds", icon: "speaker.wave.2", on: true),
+                     .init(id: "typeOut", label: "Type it out", icon: "keyboard", on: false),
+                     .init(id: "enter", label: "Press enter", icon: "return", on: true)]
+        return m
+    }
+    let empty = sample(.loading, "Loading"); empty.lastText = nil; empty.lastDate = nil; empty.lastSpeed = nil; empty.wordsToday = 0
+    let setup = sample(.needsSetup, "Needs setup")
+    setup.warnings = [.init(id: "ax", text: "Allow Accessibility so text can be pasted") {}]
+    let hist = sample(.ready, "Ready"); hist.showHistory = true
+    let states: [(String, PanelModel)] = [("ready", sample(.ready, "Ready")), ("listening", sample(.listening, "Listening")),
+                                          ("setup", setup), ("history", hist), ("first-launch", empty)]
+    for (name, model) in states {
+        if let image = MainActor.assumeIsolated({ PanelView.render(model, scheme: args.count > 3 && args[3] == "dark" ? .dark : .light) }),
+           let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+           let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: dir.appendingPathComponent("\(name).png"))
+        }
     }
     exit(0)
 }
@@ -431,6 +547,12 @@ if args.count > 2, args[1] == "--watchtest" {
         try? data.write(to: URL(fileURLWithPath: args[2]))
     }
     exit(0)
+}
+
+// Notes window test: `open -W -n Verbaline.app --args --noteswindowtest outDir` — see NotesWindow.swift.
+if args.count > 2, args[1] == "--noteswindowtest" {
+    NSApplication.shared.setActivationPolicy(.accessory)
+    NotesWindowTest.run(outDir: args[2])
 }
 
 #endif

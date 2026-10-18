@@ -41,6 +41,29 @@ enum SpeechGate {
     }
 
     /// Input: mono Float32 PCM in [-1, 1] at `sampleRate` (the app passes 16000).
+    /// Stricter loudness settings for when music is playing out loud on the Mac's speakers (turned down
+    /// while you talk). Your voice, right at the mic, is far louder than music reaching it from the
+    /// speakers, so quiet sound is dropped instead of being written down as words. Tuned with
+    /// tests/music_gate_test.swift.
+    /// Loudness of the louder half of 20 ms frames (dB, same scale as the gate). Logged per dictation as
+    /// "voiceDb" so the music gate's margin can be checked against real voices.
+    static func loudLevelDB(_ x: [Float]) -> Double {
+        let frames = stride(from: 0, to: max(x.count - 320, 0), by: 320).map { i -> Float in
+            var ms: Float = 0
+            for j in i..<i + 320 { ms += x[j] * x[j] }
+            return 10 * log10(max(ms / 320, 1e-12))
+        }.sorted()
+        guard !frames.isEmpty else { return -120 }
+        return Double(frames[frames.count / 2])
+    }
+
+    static var musicParams: Params {
+        var p = Params()
+        p.absMinDB = MusicGateTuning.absMinDB
+        p.capBelowSpeechDB = MusicGateTuning.capBelowSpeechDB
+        return p
+    }
+
     static func process(_ samples: [Float], sampleRate: Double = 16000) -> Result {
         process(samples, sampleRate: sampleRate, params: Params())
     }
@@ -536,4 +559,10 @@ enum SpeechGate {
         }
         return out
     }
+}
+
+/// Separate so the tuning test can try values without rebuilding the app.
+enum MusicGateTuning {
+    static var absMinDB: Float = -46
+    static var capBelowSpeechDB: Float = 20
 }

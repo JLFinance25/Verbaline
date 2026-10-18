@@ -15,16 +15,25 @@ final class OverlayModel: ObservableObject {
         case badge(Badge, String)   // small icon + text: "✓ Fixed …", "✨ Learned …"
     }
     @Published var phase: Phase = .hidden
-    @Published var levels: [CGFloat] = Array(repeating: 0, count: 10)
+    @Published var levels: [CGFloat] = Array(repeating: 0.06, count: 10)
+
+    /// Smoothed so the bars breathe with your voice instead of jumping between flat and full: they rise at
+    /// 35% and fall at 15% of the gap per update, top out at 70% height, and keep a small resting ripple.
+    private var smoothed: CGFloat = 0
+    private var tick = 0
 
     func push(_ level: Float) {
+        let target = CGFloat(level)
+        smoothed += (target - smoothed) * (target > smoothed ? 0.35 : 0.15)
+        tick += 1
+        let ripple = 0.06 + 0.04 * CGFloat(sin(Double(tick) * 0.9))   // never a dead flat line
         var l = levels
         l.removeFirst()
-        l.append(CGFloat(level))
+        l.append(max(ripple, smoothed * 0.7))
         levels = l
     }
 
-    func resetLevels() { levels = Array(repeating: 0, count: levels.count) }
+    func resetLevels() { smoothed = 0; levels = Array(repeating: 0.06, count: levels.count) }
 }
 
 final class OverlayController {

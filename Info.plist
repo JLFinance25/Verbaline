@@ -2,29 +2,17 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleIdentifier</key>
-    <string>local.verbaline.app</string>
-    <key>CFBundleName</key>
-    <string>Verbaline</string>
-    <key>CFBundleDisplayName</key>
-    <string>Verbaline</string>
-    <key>CFBundleExecutable</key>
-    <string>Verbaline</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleShortVersionString</key>
-    <string>0.1</string>
-    <key>CFBundleVersion</key>
-    <string>1</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>26.0</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>Verbaline listens while you hold or double-tap fn so it can turn your speech into text.</string>
-    <key>NSSpeechRecognitionUsageDescription</key>
-    <string>Verbaline transcribes your speech on this Mac.</string>
+    <key>CFBundleIdentifier</key><string>local.verbaline.app</string>
+    <key>CFBundleName</key><string>Verbaline</string>
+    <key>CFBundleDisplayName</key><string>Verbaline</string>
+    <key>CFBundleExecutable</key><string>Verbaline</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>0.1</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>LSMinimumSystemVersion</key><string>26.0</string>
+    <key>LSUIElement</key><true/>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>NSAudioCaptureUsageDescription</key><string>Verbaline asks for this only if you turn on meeting notes: it lets Verbaline hear the other people in the meeting app. The sound itself is never saved; only the notes, as text on this Mac.</string>
+    <key>NSMicrophoneUsageDescription</key><string>Verbaline uses the microphone to turn your speech into text while you hold fn, and to write down what you say when you take meeting notes. The sound itself is never saved, and nothing leaves this Mac.</string>
 </dict>
 </plist>

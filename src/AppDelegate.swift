@@ -1,3 +1,4 @@
+import SwiftUI
 import Cocoa
 import AVFoundation
 import ApplicationServices
@@ -13,7 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private let fn = FnKeyMonitor()
     private let recorder = AudioRecorder()
-    private let transcriber = AppleTranscriber()
+    private let transcriber = WhisperEngine()
     private let cleaner = TextCleaner()
     private let history = History()
     private lazy var dictionary = PersonalDictionary(
@@ -28,6 +29,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastEditWatch = "not used yet"
 
     private var statusItem: NSStatusItem!
+    private let panel = PanelModel()
+    /// The meeting notetaker (MeetingNotes.swift). Uses the same Whisper engine as dictation.
+    private lazy var meetings = MeetingNotes { [transcriber] samples in
+        try await transcriber.transcribe(samples: samples, sampleRate: AudioRecorder.sampleRate)
+    }
+    private var panelWindow: PanelWindow?
+    private var panelTimer: Timer?
+    private let settingsMenu = NSMenu()
+    private let ducker = MusicDucker()
+    /// Sound was playing on the Mac's speakers when this recording started: use the stricter music gate.
+    private var musicDuringRecording = false
     private var mode: Mode = .idle {
         didSet {
             updateStatusIcon()
@@ -68,7 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Apple voice processing on the mic + the speech-only gate that drops clicks and shrinks pauses.
     private var noiseFilter: Bool {
         get { defaults.object(forKey: "noiseFilter") as? Bool ?? true }
-        set { defaults.set(newValue, forKey: "noiseFilter"); recorder.noiseReduction = newValue }
+        set { defaults.set(newValue, forKey: "noiseFilter") }
     }
     /// Record from the Mac's own mic so AirPods stay in full-quality music mode.
     private var useBuiltInMic: Bool {
@@ -94,6 +106,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         get { TextTyper.Speed(rawValue: defaults.string(forKey: "typingSpeed") ?? "") ?? .steady }
         set { defaults.set(newValue.rawValue, forKey: "typingSpeed") }
     }
+    /// Keep what the Mac is playing (videos, music) out of dictation: turn speaker sound down while you talk,
+    /// cancel it from the recording, and use the stricter music gate. Off = type whatever the mic hears,
+    /// e.g. to transcribe a video playing out loud.
+    private var ignoreMacAudio: Bool {
+        get { defaults.object(forKey: "ignoreMacAudio") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "ignoreMacAudio") }
+    }
+    /// How far speaker sound is turned down while you talk (fraction of your volume; 0 = mute).
+    private var duckLevel: Float {
+        get { defaults.object(forKey: "duckLevel") as? Float ?? 0.5 }
+        set { defaults.set(newValue, forKey: "duckLevel"); ducker.level = newValue }
+    }
+    /// End a dictation with "make this prompt better" to get it rewritten as a clearer AI prompt.
+    private var promptCommand: Bool {
+        get { defaults.object(forKey: "promptCommand") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "promptCommand") }
+    }
+    /// Meeting notes are off unless turned on: they haven't been tried on enough real calls yet, and
+    /// recording calls can need everyone's consent. Turn on with:
+    ///   defaults write <bundle id> meetingNotesEnabled -bool true
+    /// Off = no meeting detection, no ⌃⌘N, no Notes button, no meeting settings.
+    private var meetingNotesEnabled: Bool { defaults.bool(forKey: "meetingNotesEnabled") }
     private var soundsOn: Bool {
         get { defaults.object(forKey: "sounds") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "sounds") }
@@ -102,13 +136,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Launch
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        VerbalinePaths.importOldSettings()   // before the dictionary and snippets files are first read
         setupStatusItem()
 
         recorder.onLevel = { [weak self] level in self?.overlay.model.push(level) }
-        recorder.noiseReduction = noiseFilter
+        // No Apple echo cancellation: on a Mac it reprocesses everything playing on the speakers, which made
+        // music sound thin. Speaker music is turned down while you talk instead (MusicDucker + music gate).
+        recorder.noiseReduction = false
+        ducker.level = duckLevel
+        ducker.recoverAfterCrash()
         recorder.preferBuiltInMic = useBuiltInMic
         transcriber.vocabulary = dictionary.terms
         _ = snippets   // create (and seed) on the main thread before any background dictation reads it
+        Stats.shared.backfill(from: history.items)   // first run only: Insights starts from saved history
         editWatcher.onEdited = { [weak self] pasted, edited in self?.learnFromEdit(pasted: pasted, edited: edited) }
         editWatcher.onStatus = { [weak self] line in
             self?.lastEditWatch = line
@@ -128,23 +168,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Confirm it's on: soft chime + tiny pill.
         play("Glass")
         overlay.flash("Verbaline on", seconds: 1.5)
+        meetings.onNotice = { [weak self] text in self?.overlay.flash(text, seconds: 2) }
+        if meetingNotesEnabled { meetings.start() }   // watches for meetings; asks before recording anything
 
         // ⌃⌘V pastes the last transcript, ⌃⌘C copies it.
         hotKeys = [
             GlobalHotKey(keyCode: kVK_ANSI_V, modifiers: cmdKey | controlKey, id: 1) { [weak self] in self?.pasteLastNow() },
             GlobalHotKey(keyCode: kVK_ANSI_C, modifiers: cmdKey | controlKey, id: 2) { [weak self] in self?.copyLast() },
+            // ⌃⌘N starts or stops meeting notes.
+            GlobalHotKey(keyCode: kVK_ANSI_N, modifiers: cmdKey | controlKey, id: 3) { [weak self] in if self?.meetingNotesEnabled == true { self?.meetings.toggleRecording() } },
         ]
 
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                try await self.transcriber.prepare()
-                await MainActor.run { self.engineStatus = "Ready" }
-            } catch {
-                await MainActor.run { self.engineStatus = "Speech model error: \(error.localizedDescription)" }
-            }
+        if ModelDownloader.isInstalled {
+            loadSpeechModel()
+        } else {
+            engineStatus = Self.modelMissing   // the panel offers the download
         }
         cleaner.prewarm()
+#if VERBALINE_TESTING
+        if let i = CommandLine.arguments.firstIndex(of: "--paneltest"), i + 1 < CommandLine.arguments.count {
+            runPanelTest(report: URL(fileURLWithPath: CommandLine.arguments[i + 1]))
+        }
+#endif
+    }
+
+#if VERBALINE_TESTING
+    /// `open -n Verbaline.app --args --paneltest out.json`: opens the real panel from the real status item,
+    /// presses its toggle, history and close paths, and writes what happened. Settings are put back.
+    private func runPanelTest(report: URL) {
+        var r: [String: Any] = [:]
+        panelWindow?.closesOnOutsideClick = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
+            togglePanel()
+            r["shownAfterClick"] = panelWindow?.isShown ?? false
+            r["windowNumber"] = panelWindow?.windowNumber ?? -1
+            if let f = panelWindow?.frame, let b = statusItem.button, let bw = b.window {
+                let icon = bw.convertToScreen(b.convert(b.bounds, to: nil))
+                let visible = (NSScreen.screens.first { $0.frame.intersects(icon) } ?? NSScreen.main!).visibleFrame
+                r["panelSize"] = "\(Int(f.width))x\(Int(f.height))"
+                r["topIsBelowIcon"] = f.maxY <= icon.minY
+                r["fullyOnScreen"] = visible.contains(f)
+            }
+            r["statusText"] = panel.statusText
+            r["toggleCount"] = panel.toggles.count
+            let before = soundsOn
+            panel.onToggle("sounds")
+            r["soundsToggleFlips"] = soundsOn != before && panel.toggles.first { $0.id == "sounds" }?.on == soundsOn
+            panel.onToggle("sounds")
+            r["soundsRestored"] = soundsOn == before
+            let shortHeight = panelWindow?.frame.height ?? 0
+            panel.onHistory()
+            r["recentCount"] = panel.recent.count
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in   // time for a screenshot
+                r["stillShownAfter1s"] = panelWindow?.isShown ?? false
+                if let f = panelWindow?.frame, let b = statusItem.button, let bw = b.window {
+                    let icon = bw.convertToScreen(b.convert(b.bounds, to: nil))
+                    r["historyMakesItTaller"] = f.height > shortHeight
+                    r["historyStillBelowIcon"] = f.maxY <= icon.minY
+                    r["historyFullyOnScreen"] = (NSScreen.screens.first { $0.frame.intersects(icon) } ?? NSScreen.main!).visibleFrame.contains(f)
+                }
+                togglePanel()
+                r["closedBySecondClick"] = !(panelWindow?.isShown ?? true)
+                togglePanel(); togglePanel()
+                r["reopenAndCloseWorks"] = !(panelWindow?.isShown ?? true)
+                if let data = try? JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys]) {
+                    try? data.write(to: report)
+                }
+                NSApp.terminate(nil)
+            }
+        }
+    }
+#endif
+
+    func applicationWillTerminate(_ notification: Notification) {
+        ducker.restoreNow()    // first: never leave your music turned down, even if unloading is slow
+        meetings.saveIfRecording()   // keep the transcript of a meeting that was still going
+        transcriber.unload()   // Whisper's GPU code asserts if the model is still loaded at exit
     }
 
     /// Writes ~/Library/Application Support/Verbaline/status.json so setup problems can be diagnosed from outside the app.
@@ -282,8 +381,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// `pressedAt`: when the fn press reached Verbaline (now, if started from the menu).
+    // MARK: - Speech model (first launch: download)
+
+    static let modelMissing = "Speech model not downloaded"
+    private let downloader = ModelDownloader()
+
+    private func loadSpeechModel() {
+        engineStatus = "Loading speech model…"
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.transcriber.prepare()
+                await MainActor.run { self.engineStatus = "Ready" }
+            } catch {
+                await MainActor.run { self.engineStatus = "Speech model error: \(error.localizedDescription)" }
+            }
+        }
+    }
+
+    private func downloadSpeechModel() {
+        guard !downloader.isRunning else { return }
+        engineStatus = "Downloading speech model… 0%"
+        refreshPanel()
+        downloader.start(progress: { [weak self] fraction in
+            self?.engineStatus = "Downloading speech model… \(Int(fraction * 100))%"
+            if self?.panelWindow?.isShown == true { self?.refreshPanel() }
+        }, completion: { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success:
+                self.play("Glass")
+                self.overlay.flash("Speech model ready", seconds: 1.5)
+                self.loadSpeechModel()
+            case .failure(let error):
+                self.engineStatus = Self.modelMissing
+                self.overlay.flash(error.localizedDescription, seconds: 4)
+            }
+            if self.panelWindow?.isShown == true { self.refreshPanel() }
+        })
+    }
+
     private func beginRecording(pressedAt: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Bool {
         editWatcher.finishNow()   // a new dictation means the user is done fixing the last one
+        if !ModelDownloader.isInstalled {
+            overlay.flash(downloader.isRunning ? "The speech model is still downloading" :
+                          "Download the speech model first: click the Verbaline icon in the menu bar", seconds: 3)
+            return false
+        }
         if !micAuthorized {
             switch AVCaptureDevice.authorizationStatus(for: .audio) {
             case .authorized:
@@ -318,8 +462,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func announceListening(handsFree: Bool) {
         overlay.show(commandMode ? .listeningCommand : .listening(handsFree: handsFree))
+        // Check before the chime: our own chime would make the speakers count as "playing".
+        if ignoreMacAudio, MusicDucker.speakersArePlaying() { musicDuringRecording = true }
         play("Tink")
+        // Turn speaker music down once this is really dictation (not a quick tap), after the chime.
+        DispatchQueue.main.asyncAfter(deadline: .now() + tapMax + 0.02) { [weak self] in
+            guard let self, self.ignoreMacAudio, self.mode == .pushToTalk || self.mode == .handsFree else { return }
+            self.ducker.duck()
+        }
         if aiCleanup { cleaner.prewarm() }   // the on-device model unloads when idle; wake it while you talk
+        transcriber.prewarm()                 // same for Whisper: the Mac may have moved it out of memory
         startMicWatchdog()
         maxTimer?.invalidate()
         maxTimer = Timer.scheduledTimer(withTimeInterval: maxRecording, repeats: false) { [weak self] _ in
@@ -363,6 +515,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pendingNotice = nil
         commandMode = false
         recorder.stop()
+        ducker.restore()
+        musicDuringRecording = false
         mode = .idle
         swallowNextFnUp = false
         if showMessage { overlay.flash("Cancelled", seconds: 0.9) } else { overlay.hide() }
@@ -376,7 +530,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let first = recorder.firstBufferAt { recordStats["keyToMic"] = first - recordingKeyAt }
         let stopStarted = ProcessInfo.processInfo.systemUptime
         let samples = recorder.stop()
+        ducker.restore()
+        let music = musicDuringRecording
+        musicDuringRecording = false
         recordStats["stop"] = ProcessInfo.processInfo.systemUptime - stopStarted
+        if music { recordStats["music"] = 1 }
         let seconds = Double(samples.count) / AudioRecorder.sampleRate
         let isCommand = commandMode
         commandMode = false
@@ -393,7 +551,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         mode = .processing
         play("Pop")
         if isCommand {
-            runCommand(samples: samples)
+            runCommand(samples: samples, music: music)
             return
         }
         overlay.show(.processing)
@@ -401,6 +559,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let useAI = aiCleanup
         let filter = noiseFilter
         let sendCommand = pressEnterCommand
+        let improveCommand = promptCommand
         Task { [weak self] in
             guard let self else { return }
             let started = Date()
@@ -408,8 +567,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // 1. Keep only the voiced parts: drops chip clicks / fidget noise and shrinks long pauses.
                 var audio = samples
                 var timings = recordStats
-                if filter {
-                    let gate = SpeechGate.process(samples, sampleRate: AudioRecorder.sampleRate)
+                if filter || music {
+                    let gate = music ? SpeechGate.process(samples, sampleRate: AudioRecorder.sampleRate, params: SpeechGate.musicParams)
+                                     : SpeechGate.process(samples, sampleRate: AudioRecorder.sampleRate)
+                    timings["voiceDb"] = SpeechGate.loudLevelDB(gate.samples)
                     timings["gate"] = Date().timeIntervalSince(started)
                     timings["audioIn"] = gate.originalSeconds
                     timings["audioOut"] = gate.outputSeconds
@@ -425,17 +586,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let t1 = Date()
                 let raw = try await self.transcriber.transcribe(samples: audio, sampleRate: AudioRecorder.sampleRate)
                 timings["speech"] = Date().timeIntervalSince(t1)
+                if let w = self.transcriber.lastPrewarmSeconds { timings["prewarm"] = w }
                 // 3. Cleanup (skips the AI when there's nothing for it to fix), then dictionary spellings.
                 let t2 = Date()
                 let result = await TextPipeline.finish(raw, useAI: useAI, cleaner: self.cleaner,
                                                        dictionary: self.dictionary, snippets: self.snippets,
-                                                       pressEnterCommand: sendCommand)
+                                                       pressEnterCommand: sendCommand, promptCommand: improveCommand)
                 timings["cleanup"] = Date().timeIntervalSince(t2)
+                // 4. "…make this prompt better": rewrite it as a clearer AI prompt (or keep it as said).
+                var text = result.text
+                var promptResult: PromptResult?
+                if result.improvePrompt {
+                    if text.isEmpty {
+                        await MainActor.run {
+                            self.mode = .idle
+                            self.overlay.flash("Say your prompt first, then “make this prompt better”", seconds: 2.5)
+                        }
+                        return
+                    }
+                    await MainActor.run { self.overlay.show(.working("Improving prompt…")) }
+                    let t3 = Date()
+                    switch await PromptBoost.improve(text) {
+                    case .improved(let better): text = better; promptResult = .improved
+                    case .keptAsSaid(let why): promptResult = .keptAsSaid(why)
+                    }
+                    timings["promptBoost"] = Date().timeIntervalSince(t3)
+                }
                 timings["total"] = Date().timeIntervalSince(started)
                 let stats = timings
+                let finalText = text
+                let prompt = promptResult
                 await MainActor.run {
-                    self.deliver(raw: raw, text: result.text, fixes: result.fixes, seconds: seconds, timings: stats,
-                                 releasedAt: releaseAt, pressEnter: result.pressEnter)
+                    self.deliver(raw: raw, text: finalText, fixes: result.fixes, seconds: seconds, timings: stats,
+                                 releasedAt: releaseAt, pressEnter: result.pressEnter, prompt: prompt)
                 }
             } catch {
                 await MainActor.run {
@@ -454,7 +637,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// fn+Control was released: read the selection, transcribe the instruction, let the on-device AI
     /// rewrite (or draft), and paste the result over the selection.
-    private func runCommand(samples: [Float]) {
+    private func runCommand(samples: [Float], music: Bool = false) {
         overlay.show(.working("Thinking…"))
         pendingNotice = nil
         let filter = noiseFilter
@@ -463,8 +646,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             Task { [weak self] in
                 guard let self else { return }
                 var audio = samples
-                if filter {
-                    let gate = SpeechGate.process(samples, sampleRate: AudioRecorder.sampleRate)
+                if filter || music {
+                    let gate = music ? SpeechGate.process(samples, sampleRate: AudioRecorder.sampleRate, params: SpeechGate.musicParams)
+                                     : SpeechGate.process(samples, sampleRate: AudioRecorder.sampleRate)
                     guard gate.hasSpeech else {
                         await MainActor.run { self.deliverCommand(.failed("Didn't hear an instruction"), instruction: "", selection: selection) }
                         return
@@ -536,8 +720,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    enum PromptResult { case improved, keptAsSaid(String) }
+
+    /// `prompt`: set when the dictation ended with "make this prompt better". An improved prompt is AI-written,
+    /// so it's always pasted (never typed out) and isn't watched for learning.
     private func deliver(raw: String, text: String, fixes: [(from: String, to: String)],
-                         seconds: Double, timings: [String: Double], releasedAt: TimeInterval, pressEnter: Bool = false) {
+                         seconds: Double, timings: [String: Double], releasedAt: TimeInterval, pressEnter: Bool = false,
+                         prompt: PromptResult? = nil) {
         var timings = timings
         mode = .idle
         if timings["speech"] != nil { engineStatus = "Ready" }   // a launch-time model error has since recovered
@@ -569,7 +758,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.overlay.flash(self.typingStoppedBySwitch ? "Stopped typing — you switched apps" : "Stopped typing", seconds: 1.5)
                 return   // only part of the text went in: nothing to watch
             }
-            if let notice {
+            if case .improved = prompt {
+                self.overlay.flash(.badge(.command, "Prompt improved — ⌘Z to undo"), seconds: 2.5)
+                self.play("Purr")
+                return   // AI-written: nothing to learn from your edits
+            } else if case .keptAsSaid(let why) = prompt {
+                self.overlay.flash("Pasted as you said it — \(why)", seconds: 3)
+            } else if let notice {
                 self.overlay.flash(notice, seconds: 2.5)
             } else if let fix = fixes.first {
                 // A learned (or hand-added) "heard -> written" line just changed a word: show it.
@@ -583,7 +778,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.editWatcher.watch(pasted: trimmed, in: pid)
             }
         }
-        if typeOut, AXIsProcessTrusted() {
+        let aiWritten: Bool = { if case .improved = prompt { return true }; return false }()
+        if typeOut, AXIsProcessTrusted(), !aiWritten {
             // Type it out: busy until done (fn gives the busy sound, Esc stops), clipboard untouched.
             mode = .processing
             fn.swallowEscape = true
@@ -616,6 +812,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let rounded = timings.mapValues { ($0 * 1000).rounded() / 1000 }
         if !secureField {
             history.add(HistoryEntry(date: Date(), raw: raw, text: trimmed, seconds: seconds, timings: rounded))
+            Stats.shared.record(text: trimmed, seconds: seconds)   // counts only, for Insights
         }
     }
 
@@ -638,12 +835,162 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Menu bar
 
+    /// Left-click the icon: the panel. Right-click (or the panel's gear): the full settings menu.
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        let menu = NSMenu()
-        menu.delegate = self
-        statusItem.menu = menu
+        settingsMenu.delegate = self
+        if let button = statusItem.button {
+            button.target = self
+            button.action = #selector(statusItemClicked(_:))
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        }
+        setupPanel()
         updateStatusIcon()
+    }
+
+    @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
+        let event = NSApp.currentEvent
+        if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
+            showSettingsMenu()
+        } else {
+            togglePanel()
+        }
+    }
+
+    private func showSettingsMenu() {
+        closePanel()
+        statusItem.menu = settingsMenu          // attach just long enough to open it under the icon
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
+    }
+
+    // MARK: - Panel
+
+    private func setupPanel() {
+        panel.onToggle = { [weak self] id in
+            guard let self else { return }
+            switch id {
+            case "ai": self.aiCleanup.toggle()
+            case "sounds": self.soundsOn.toggle()
+            case "typeOut": self.typeOut.toggle()
+            case "enter": self.pressEnterCommand.toggle()
+            case "macAudio": self.ignoreMacAudio.toggle()
+            default: break
+            }
+            self.refreshPanel()
+        }
+        panel.onCopyLast = { [weak self] in
+            guard let self, let text = self.history.last?.text else { return }
+            TextInserter.copyToClipboard(text)
+            self.panel.copiedFlash = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { self.panel.copiedFlash = false }
+        }
+        panel.onPasteLast = { [weak self] in
+            guard let self else { return }
+            self.closePanel()   // the panel never took focus, so this pastes into the app you were in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { self.pasteLastNow() }
+        }
+        panel.onCopyRecent = { [weak self] text in
+            TextInserter.copyToClipboard(text)
+            self?.closePanel()
+            self?.overlay.flash("Copied", seconds: 0.8)
+        }
+        panel.onWords = { [weak self] in self?.closePanel(); self?.openDictionary() }
+        panel.onSnippets = { [weak self] in self?.closePanel(); self?.openSnippets() }
+        panel.onSettings = { [weak self] in self?.showSettingsMenu() }
+        panel.onNotes = { [weak self] in self?.closePanel(); self?.meetings.openWindow() }
+        panel.onQuit = { NSApp.terminate(nil) }
+
+        panel.onHistory = { [weak self] in
+            guard let self else { return }
+            self.panel.showHistory.toggle()
+            DispatchQueue.main.async { self.panelWindow?.fit() }   // after SwiftUI lays out the new height
+        }
+        let win = PanelWindow(model: panel)
+        win.onClose = { [weak self] in self?.panelTimer?.invalidate() }
+        panelWindow = win
+    }
+
+    private func togglePanel() {
+        guard let panelWindow, let button = statusItem.button, let buttonWindow = button.window else { return }
+        if panelWindow.isShown { closePanel(); return }
+        panel.showHistory = false
+        refreshPanel()
+        let icon = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        panelWindow.show(below: icon)
+        // Placement log (~/Library/Application Support/Verbaline/panel-placement.txt), for multi-screen setups.
+        let screens = NSScreen.screens.map { "frame \($0.frame) visible \($0.visibleFrame)" }.joined(separator: " | ")
+        let line = "\(Date()) icon \(icon) panel \(panelWindow.frame) screens: \(screens)\n"
+        try? line.write(to: history.fileURL.deletingLastPathComponent().appendingPathComponent("panel-placement.txt"),
+                        atomically: true, encoding: .utf8)
+        // Keep status and numbers live while it's open (model loading, a dictation finishing).
+        panelTimer?.invalidate()
+        panelTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] timer in
+            guard let self, self.panelWindow?.isShown == true else { timer.invalidate(); return }
+            self.refreshPanel()
+        }
+    }
+
+    private func closePanel() {
+        panelTimer?.invalidate()
+        panelWindow?.close()
+    }
+
+    private func refreshPanel() {
+        panel.notesEnabled = meetingNotesEnabled
+        var warnings: [PanelModel.Warning] = []
+        if !fn.isRunning {
+            warnings.append(.init(id: "input", text: "Allow Input Monitoring so fn works") { [weak self] in self?.openInputMonitoring() })
+        }
+        if !AXIsProcessTrusted() {
+            warnings.append(.init(id: "ax", text: "Allow Accessibility so text can be pasted") { [weak self] in self?.openAccessibility() })
+        }
+        if AVCaptureDevice.authorizationStatus(for: .audio) != .authorized {
+            warnings.append(.init(id: "mic", text: "Allow the microphone") { [weak self] in self?.openMicrophone() })
+        }
+        if NSWorkspace.shared.runningApplications.contains(where: { ($0.bundleIdentifier ?? "").lowercased().contains("wispr") }) {
+            warnings.append(.init(id: "wispr", text: "Wispr Flow is running — quit it so fn doesn't trigger both") {})
+        }
+        if engineStatus == Self.modelMissing {
+            warnings.insert(.init(id: "model", text: "Download the speech model (1.6 GB, one time) to start dictating") {
+                [weak self] in self?.downloadSpeechModel()
+            }, at: 0)
+        } else if engineStatus.hasPrefix("Downloading") {
+            warnings.insert(.init(id: "model", text: engineStatus + " — you can keep working") {}, at: 0)
+        }
+        panel.warnings = warnings
+
+        switch mode {
+        case .pressed, .pushToTalk, .handsFree, .awaitingSecondTap:
+            panel.status = .listening; panel.statusText = "Listening"
+        case .processing:
+            panel.status = .working; panel.statusText = "Working"
+        default:
+            if engineStatus == "Ready" {
+                panel.status = warnings.contains { $0.id != "wispr" } ? .needsSetup : .ready
+                panel.statusText = panel.status == .ready ? "Ready" : "Needs setup"
+            } else if engineStatus.hasPrefix("Loading") || engineStatus.hasPrefix("Downloading") {
+                panel.status = .loading; panel.statusText = engineStatus.hasPrefix("Loading") ? "Loading" : "Downloading"
+            } else if engineStatus == Self.modelMissing {
+                panel.status = .needsSetup; panel.statusText = "Needs setup"
+            } else {
+                panel.status = .needsSetup; panel.statusText = "Model error"
+            }
+        }
+
+        let today = history.items.filter { Calendar.current.isDateInToday($0.date) }
+        panel.wordsToday = today.reduce(0) { $0 + $1.text.split(whereSeparator: { $0.isWhitespace }).count }
+        panel.lastSpeed = history.last?.timings?["releaseToPaste"]
+        panel.lastText = history.last?.text
+        panel.lastDate = history.last?.date
+        panel.recent = history.items.prefix(6).map { $0.text }
+        panel.toggles = [
+            .init(id: "ai", label: "AI cleanup", icon: "sparkles", on: aiCleanup),
+            .init(id: "sounds", label: "Sounds", icon: "speaker.wave.2", on: soundsOn),
+            .init(id: "typeOut", label: "Type it out", icon: "keyboard", on: typeOut),
+            .init(id: "enter", label: "Press enter", icon: "return", on: pressEnterCommand),
+            .init(id: "macAudio", label: "Ignore Mac audio", icon: "speaker.slash", on: ignoreMacAudio),
+        ]
     }
 
     private func updateStatusIcon() {
@@ -656,6 +1003,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Verbaline")
         image?.isTemplate = true
         statusItem?.button?.image = image
+        if panelWindow?.isShown == true { refreshPanel() }
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -722,23 +1070,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         noise.state = noiseFilter ? .on : .off
         menu.addItem(noise)
 
-        let modeName: String
-        switch AVCaptureDevice.preferredMicrophoneMode {
-        case .voiceIsolation: modeName = "Voice Isolation ✓"
-        case .wideSpectrum: modeName = "Wide Spectrum"
-        default: modeName = "Standard"
-        }
         let builtIn = NSMenuItem(title: "Use MacBook Microphone (keeps AirPods music quality)",
                                  action: #selector(toggleBuiltInMic), keyEquivalent: "")
         builtIn.target = self
         builtIn.state = useBuiltInMic ? .on : .off
         menu.addItem(builtIn)
 
-        let micMode = NSMenuItem(title: "Mic Mode: \(modeName) — choose Voice Isolation to ignore music…",
-                                 action: #selector(chooseMicMode), keyEquivalent: "")
-        micMode.target = self
-        micMode.isEnabled = noiseFilter   // the mode only applies with Apple voice processing on
-        menu.addItem(micMode)
 
         let dict = NSMenuItem(title: "Edit Personal Dictionary…", action: #selector(openDictionary), keyEquivalent: "")
         dict.target = self
@@ -780,6 +1117,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         speedItem.submenu = speedMenu
         speedItem.isEnabled = typeOut
         menu.addItem(speedItem)
+
+        let macAudio = NSMenuItem(title: "Ignore Mac Audio (keep videos and music out of dictation)",
+                                  action: #selector(toggleIgnoreMacAudio), keyEquivalent: "")
+        macAudio.target = self
+        macAudio.state = ignoreMacAudio ? .on : .off
+        menu.addItem(macAudio)
+
+        let duckItem = NSMenuItem(title: "Turn Speaker Sound Down To", action: nil, keyEquivalent: "")
+        let duckMenu = NSMenu()
+        for (label, value) in [("50%", Float(0.5)), ("25%", 0.25), ("10%", 0.1), ("Mute", 0)] {
+            let item = NSMenuItem(title: label, action: #selector(setDuckLevel(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = value
+            item.state = abs(duckLevel - value) < 0.01 ? .on : .off
+            duckMenu.addItem(item)
+        }
+        duckItem.submenu = duckMenu
+        duckItem.isEnabled = ignoreMacAudio
+        menu.addItem(duckItem)
+
+        let promptItem = NSMenuItem(title: "“Make This Prompt Better” (say it at the end to rewrite your dictation as an AI prompt)",
+                                    action: #selector(togglePromptCommand), keyEquivalent: "")
+        promptItem.target = self
+        promptItem.state = promptCommand ? .on : .off
+        menu.addItem(promptItem)
+
+        if meetingNotesEnabled {
+        menu.addItem(.separator())
+        let notesItem = NSMenuItem(title: meetings.isRecording ? "Stop Meeting Notes  (⌃⌘N)" : "Open Meeting Notes  (⌃⌘N starts notes)",
+                                   action: #selector(openMeetingNotes), keyEquivalent: "")
+        notesItem.target = self
+        menu.addItem(notesItem)
+        let askItem = NSMenuItem(title: "Ask to Take Notes When a Meeting Starts", action: #selector(toggleMeetingAsk), keyEquivalent: "")
+        askItem.target = self
+        askItem.state = meetings.askWhenMeetingStarts ? .on : .off
+        menu.addItem(askItem)
+        let loanItem = NSMenuItem(title: "Loan Details in Meeting Notes", action: #selector(toggleMeetingLoanDetails), keyEquivalent: "")
+        loanItem.target = self
+        loanItem.state = meetings.loanDetails ? .on : .off
+        menu.addItem(loanItem)
+        }
+        menu.addItem(.separator())
 
         let sounds = NSMenuItem(title: "Sounds", action: #selector(toggleSounds), keyEquivalent: "")
         sounds.target = self
@@ -858,6 +1237,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc private func toggleAI() { aiCleanup.toggle() }
     @objc private func toggleSounds() { soundsOn.toggle() }
+    @objc private func togglePromptCommand() { promptCommand.toggle() }
+    @objc private func toggleIgnoreMacAudio() { ignoreMacAudio.toggle() }
+    @objc private func openMeetingNotes() { if meetings.isRecording { meetings.stopRecording() } else { meetings.openWindow() } }
+    @objc private func toggleMeetingAsk() { meetings.askWhenMeetingStarts.toggle() }
+    @objc private func toggleMeetingLoanDetails() { meetings.loanDetails.toggle() }
+    @objc private func setDuckLevel(_ sender: NSMenuItem) { if let v = sender.representedObject as? Float { duckLevel = v } }
     @objc private func toggleTypeOut() { typeOut.toggle() }
     @objc private func togglePressEnter() { pressEnterCommand.toggle() }
     @objc private func setTypingSpeed(_ sender: NSMenuItem) {
@@ -866,7 +1251,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleNoise() { noiseFilter.toggle() }
     @objc private func toggleBuiltInMic() { useBuiltInMic.toggle() }
     /// Apple's own picker (Standard / Voice Isolation / Wide Spectrum). Apps can't set it directly.
-    @objc private func chooseMicMode() { AVCaptureDevice.showSystemUserInterface(.microphoneModes) }
     @objc private func openSnippets() { NSWorkspace.shared.open(snippets.fileURL) }
     @objc private func toggleLearn() { learnFromEdits.toggle() }
     @objc private func forgetLastLearned() {

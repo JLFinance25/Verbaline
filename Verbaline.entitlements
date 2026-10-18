@@ -5,5 +5,8 @@
     <!-- Hardened runtime blocks the microphone unless the app declares it needs it. -->
     <key>com.apple.security.device.audio-input</key>
     <true/>
+    <!-- Whisper's libraries come from Homebrew and are signed by Homebrew, not by us. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
 </dict>
 </plist>
