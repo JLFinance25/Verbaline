@@ -121,6 +121,97 @@ func checksTests() {
     check(picked.contains { $0.text.contains("$410") }, "relevance: picks the part that mentions the car payment")
     let w = C.cleanOverview("Here is the overview:\nIn this call you discussed rates.")
     check(w == "In this meeting you discussed rates.", "wording: 'call' becomes 'meeting', no 'Here is'", w)
+    qualityChecks(known: known, text: text)
+}
+
+// The five problems measured on 2026-10-17 (end-to-end test + 60-minute meeting), each with the text the model
+// really wrote then.
+func qualityChecks(known: Set<Double>, text: String) {
+    // 1. Title: a short topic, never a sentence cut off at 8 words.
+    check(C.cleanTitle("Maria and I had a meeting today to", fallback: "") == "", "title: a cut-off sentence is rejected",
+          C.cleanTitle("Maria and I had a meeting today to", fallback: ""))
+    check(C.isTopicTitle("Purchase pre-approval") && C.isTopicTitle("First-time buyers pre-approval meeting")
+          && !C.isTopicTitle("You discussed the pre-approval") && !C.isTopicTitle("Rates, documents, and next steps for the"),
+          "title: topic titles pass, sentences and cut-offs don't")
+    check(C.topicTitle(transcript: text) == "Purchase pre-approval", "title: topic fallback for a pre-approval meeting", C.topicTitle(transcript: text))
+    check(C.topicTitle(transcript: "You: What price range are you looking at for the new house?") == "Home purchase planning",
+          "title: topic fallback for a purchase meeting")
+
+    // 2. To-dos: the owner is whoever does it; wishes aren't to-dos; short actions.
+    let e2e = "You: Hi Maria, thanks for making time today.\nYou: What price range are you looking at for the new house?\nThem: We are hoping to stay under 425,000, and we have saved about 85,000 for the down payment.\nYou: That works. Please send me your last two pay stubs and your W-2s by Friday, and I will send you the document checklist tonight.\nThem: Sounds good, we would like to close by the middle of January if possible."
+    let (t2, _) = C.parseTodos("You: Send me your last two pay stubs and your W-2s by Friday\nThem: Sounds good, we would like to close by the middle of January if possible\nYou: Send the document checklist tonight",
+                               known: C.knownNumbers(in: e2e), transcript: e2e)
+    check(t2 == [MeetingTodo(owner: .them, task: "Send last two pay stubs and W-2s by Friday"), MeetingTodo(owner: .you, task: "Send the document checklist tonight")],
+          "to-dos: 'send me your pay stubs' is Them's; 'we'd like to close by January' isn't a to-do", "\(t2)")
+    let (labels, _) = C.parseTodos("Loan officer: Send the pre-approval letter\nClients: Send your W-2s for 2024 and 2025", known: known, transcript: text)
+    check(labels == [MeetingTodo(owner: .you, task: "Send the pre-approval letter"), MeetingTodo(owner: .them, task: "Send their W-2s for 2024 and 2025")],
+          "to-dos: 'Loan officer:' / 'Clients:' labels read", "\(labels)")
+    let (made, _) = C.parseTodos("Clients: Send car payment\nClients: Upload documents", known: known, transcript: text)
+    let (neg, _) = C.parseTodos("Clients: Send new credit cards\nClients: Open new credit cards", known: known, transcript: text)
+    check(neg.isEmpty, "to-dos: 'don't open any new credit cards' never becomes a to-do", "\(neg)")
+    check(made == [MeetingTodo(owner: .them, task: "Upload documents")], "to-dos: a task made up from a plain fact ('one car payment') is dropped", "\(made)")
+    let (both, _) = C.parseTodos("You: Send the document checklist tonight\nThem: Send the document checklist tonight", known: C.knownNumbers(in: e2e), transcript: e2e)
+    check(C.dedupe(both) == [MeetingTodo(owner: .you, task: "Send the document checklist tonight")], "to-dos: owner taken from 'I will send you…', so one task isn't listed twice", "\(both)")
+    check(!C.dropUnbackedSentences("The rate of 6.375% is a good rate for them.", lines: C.spokenLines(lines())).0.contains("good rate"), "wording: an unsaid 'good rate' is dropped")
+    let (merged, m) = C.dropRepeatedSentences("You need permission to pull credit for both of them.\n\nYou would need permission to pull their credit, and you will send the pre-approval letter within a day or two.")
+    check(m == 1 && merged.hasPrefix("You would need permission") && merged.components(separatedBy: "permission").count == 2, "repeats: a sentence said again with more detail keeps only the fuller one", merged)
+    check(C.source(of: "Send pre-approval letter", in: text).owner == .you, "to-dos: 'I'll run credit and send you the letter' is a You task")
+    check(C.dedupe([MeetingTodo(owner: .them, task: "Send pay stubs"), MeetingTodo(owner: .them, task: "Upload pay stubs and W-2s"),
+                    MeetingTodo(owner: .them, task: "Send bank statements")])
+          == [MeetingTodo(owner: .them, task: "Upload pay stubs and W-2s"), MeetingTodo(owner: .them, task: "Send bank statements")],
+          "to-dos: 'Send pay stubs' and 'Upload pay stubs and W-2s' are one task, the fuller kept")
+    check(C.fixTodo(owner: .you, task: "Upload the pay stubs and W-2s")?.0 == .them && C.fixTodo(owner: .you, task: "Send the pre-approval letter")?.0 == .you
+          && C.fixTodo(owner: .you, task: "Send pay stubs to underwriting")?.0 == .you,
+          "to-dos: client documents are Them's to send; the officer's own sends stay You's")
+    check(C.fixTodo(owner: .them, task: "Please send me the document checklist").map { "\($0.0): \($0.1)" } == "you: Send them the document checklist",
+          "to-dos: a client asking 'send me the checklist' is a You task", C.fixTodo(owner: .them, task: "Please send me the document checklist").map { $0.1 } ?? "nil")
+
+    // 3. Overview in house style: "you", never "I".
+    let firstPerson = "Maria and I had a meeting today to discuss her new house purchase. I asked her to send me her last two pay stubs by Friday, and I will send her the document checklist tonight."
+    let fixed = C.secondPerson(firstPerson)
+    check(fixed == "You and Maria had a meeting today to discuss her new house purchase. You asked her to send you her last two pay stubs by Friday, and you will send her the document checklist tonight."
+          && !C.hasFirstPerson(fixed), "overview: 'Maria and I…' becomes 'You and Maria…'", fixed)
+    let quoted = "Maria said \"we want to close by January\" and you agreed."
+    check(C.secondPerson(quoted) == quoted && !C.hasFirstPerson(quoted), "overview: quoted words are left as said", C.secondPerson(quoted))
+    check(C.capitalizeSentences("the rate is 6.375%. you'll call back.") == "The rate is 6.375%. You'll call back.", "overview: sentence starts capitalised, decimals left alone")
+
+    // 4. Repeats: the 60-minute overview had the same opening sentence in four paragraphs.
+    let repeated = "You discussed the pre-approval process with Maria and Daniel. They have saved $85,000.\n\nYou discussed the pre-approval process with Maria and Daniel. You explained that rates move every day.\n\nYou discussed the pre-approval process for Maria and Daniel, who are first-time buyers. Maria and Daniel have saved $85,000 for the down payment."
+    let (once, n) = C.dropRepeatedSentences(repeated)
+    check(n == 2 && once.components(separatedBy: "pre-approval process").count == 2 && once.contains("rates move every day") && once.contains("first-time"),
+          "overview: a repeated sentence is said once, new facts kept", "\(n): \(once)")
+    check(!C.sameSentence("They have a car payment of $410 a month.", "Maria has a student loan of $220 a month."), "repeats: different facts aren't repeats")
+    check(C.sameSentence("They have a car payment of $410 a month and a student loan of $220 a month.",
+                         "They also have a $410 monthly car payment and a $220 monthly student loan."), "repeats: same numbers, other words, is a repeat")
+    let officer = C.secondPerson("The loan officer explained that the loan officer's portal is secure. The loan officer is sending the letter.")
+    check(officer == "You explained that your portal is secure. You are sending the letter.", "overview: 'The loan officer explained' becomes 'You explained'", officer)
+
+    // 5. Wording drift on regulated words: keep what was said.
+    let said = C.spokenLines(lines())
+    let drift = "You explained that with their income and down payment, they would qualify for a loan amount of $340,000. The loan amount would be $340,000. They want to get pre-approved so they can make offers. They are pre-approved for $340,000."
+    let (kept, droppedClaims) = C.dropUnbackedSentences(drift, lines: said)
+    check(droppedClaims == 2 && !kept.contains("qualify") && kept.contains("The loan amount would be $340,000.") && kept.contains("get pre-approved"),
+          "wording: 'would qualify for $340,000' and 'pre-approved for $340,000' dropped, the officer's words kept", "\(droppedClaims): \(kept)")
+    check(C.acceptLoanValue("Qualifies for $340,000", needsNumber: true, known: known, transcript: text) == nil, "loan value: an unsaid 'qualifies' is dropped")
+}
+
+/// Model-output checks shared by the sample and the 60-minute meeting.
+func checkWording(_ note: MeetingNote, _ lines: [TranscriptLine], _ label: String) {
+    check(C.isTopicTitle(note.title), "\(label): title is a short topic", note.title)
+    check(!C.hasFirstPerson(note.overview), "\(label): overview says 'you', never 'I' or 'we'")
+    let claims = C.sentences(note.overview).filter { !C.unbackedClaims(in: $0, lines: C.spokenLines(lines)).isEmpty }
+    check(claims.isEmpty, "\(label): no qualify/approve/lock claim the meeting didn't make", "\(claims)")
+    let ss = C.sentences(note.overview)
+    let repeats = ss.indices.flatMap { i in ss.indices.filter { $0 > i && C.sameSentence(ss[i], ss[$0]) }.map { "\(ss[i]) ≈ \(ss[$0])" } }
+    check(repeats.isEmpty, "\(label): no sentence repeated", "\(repeats)")
+    check(note.todos.allSatisfy { C.wordCount($0.task) <= 16 }, "\(label): to-dos are short actions", "\(note.todos.map(\.task))")
+    check(!note.todos.contains { $0.owner == .you && $0.task.lowercased().range(of: "^(send|upload|provide|submit).*(pay stub|w-2|bank statement)", options: .regularExpression) != nil },
+          "\(label): sending pay stubs / W-2s / statements isn't a You to-do")
+    check(!note.todos.contains { $0.task.lowercased().contains("would like") || $0.task.lowercased().hasPrefix("close") }, "\(label): a wish to close isn't a to-do")
+    check(!note.todos.contains { $0.task.lowercased().contains("credit card") || $0.task.lowercased().contains("pay off") },
+          "\(label): 'don't open new credit cards' / 'don't pay off the car' aren't to-dos", "\(note.todos.map(\.task))")
+    check(!note.todos.contains { $0.owner == .them && $0.task.lowercased().contains("pre-approval letter") }, "\(label): sending the pre-approval letter isn't a Them to-do")
+    check(!note.todos.contains { $0.task.lowercased().contains("car payment") || $0.task.lowercased().contains("student loan") }, "\(label): no to-do made up from a debt that was only mentioned")
 }
 
 // MARK: 2. MeetingStore
@@ -199,6 +290,9 @@ func MeetingStoreTestStamp(_ d: Date) -> String {
         check(note.loanDetails.first { $0.label == "Purchase price" }?.value.contains("425") ?? false, "purchase price is $425,000")
         check(!note.overview.lowercased().contains(" call "), "overview says meeting, not call")
         check(note.transcript == sample, "transcript kept unchanged")
+        checkWording(note, sample, "sample")
+        check(note.todos.contains { $0.owner == .them && $0.task.lowercased().contains("pay stub") || $0.owner == .them && $0.task.lowercased().contains("upload") },
+              "sample: uploading the documents is a Them to-do")
 
         t0 = Date()
         let off = await s.summarize(sample, appName: "Zoom", date: Date(), duration: 600, loanDetails: false)
@@ -222,11 +316,18 @@ func MeetingStoreTestStamp(_ d: Date) -> String {
         let longSecs = Date().timeIntervalSince(t0)
         print(String(format: "60-minute meeting: %d words, %.1f s (%@)", C.wordCount(longText), longSecs, s.lastDiagnostic))
         print("---- long title: \(longNote.title)\n---- long overview:\n\(longNote.overview)")
+        print("---- long to-dos:"); longNote.todos.forEach { print("  \($0.owner): \($0.task)") }
         check(!s.lastDiagnostic.contains("failed"), "60-minute meeting summarised without error", s.lastDiagnostic)
         check(C.wordCount(longNote.overview) >= 60, "60-minute overview isn't empty")
         check(".!?".contains(longNote.overview.last ?? " "), "60-minute overview ends with a whole sentence")
         let longKnown = C.knownNumbers(in: longText)
         check(longNote.loanDetails.allSatisfy { C.unknownNumbers(in: $0.value, known: longKnown).isEmpty }, "60-minute loan-detail numbers all in transcript")
+        checkWording(longNote, long, "60-minute")
+        let longWords = C.wordCount(longNote.overview)
+        check((120...600).contains(longWords), "60-minute overview is a 2–3 minute read (120–600 words)", "\(longWords) words")
+        let openers = longNote.overview.components(separatedBy: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            .map { $0.split(separator: " ").prefix(4).joined(separator: " ").lowercased() }
+        check(Set(openers).count == openers.count, "60-minute: no two paragraphs start the same way", "\(openers)")
 
         t0 = Date()
         let a3 = await s.answer("How much is the car payment?", from: long)

@@ -38,6 +38,12 @@ enum Theme {
     static let red   = dynamic(light: 0xE24B4A, dark: 0xE24B4A)        // recording dot, errors
     static let amber = dynamic(light: 0xBA7517, dark: 0xEF9F27)        // warnings
 
+    // MARK: logo (fixed colours for the app icon file; the in-app mark uses teal/violet above)
+    static let logoPage   = rgb(0xFAF8F3)
+    static let logoLine   = rgb(0xE4E0D6)
+    static let logoV      = rgb(0x0F6E56)
+    static let logoBars   = rgb(0x534AB7)
+
     // MARK: shape and spacing
     static let cardRadius: CGFloat = 14
     static let windowRadius: CGFloat = 18

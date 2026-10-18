@@ -219,14 +219,40 @@ if args.count > 2, args[1] == "--renderpanel" {
     let setup = sample(.needsSetup, "Needs setup")
     setup.warnings = [.init(id: "ax", text: "Allow Accessibility so text can be pasted") {}]
     let hist = sample(.ready, "Ready"); hist.showHistory = true
+    let withNotes = sample(.ready, "Ready"); withNotes.notesEnabled = true
     let states: [(String, PanelModel)] = [("ready", sample(.ready, "Ready")), ("listening", sample(.listening, "Listening")),
-                                          ("setup", setup), ("history", hist), ("first-launch", empty)]
+                                          ("setup", setup), ("history", hist), ("first-launch", empty), ("with-notes", withNotes)]
     for (name, model) in states {
         if let image = MainActor.assumeIsolated({ PanelView.render(model, scheme: args.count > 3 && args[3] == "dark" ? .dark : .light) }),
            let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
            let png = rep.representation(using: .png, properties: [:]) {
             try? png.write(to: dir.appendingPathComponent("\(name).png"))
         }
+    }
+    exit(0)
+}
+
+// Logo files: `Verbaline --renderlogo dir` writes AppIcon.iconset (for iconutil) and a menu bar preview.
+if args.count > 2, args[1] == "--renderlogo" {
+    let dir = URL(fileURLWithPath: args[2], isDirectory: true).appendingPathComponent("AppIcon.iconset", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    func save(_ image: NSImage, _ name: String) {
+        guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return }
+        try? png.write(to: name.hasPrefix("/") ? URL(fileURLWithPath: name) : dir.appendingPathComponent(name))
+    }
+    for (points, scale) in [(16, 1), (16, 2), (32, 1), (32, 2), (128, 1), (128, 2), (256, 1), (256, 2), (512, 1), (512, 2)] {
+        let px = CGFloat(points * scale)
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(px), pixelsHigh: Int(px), bitsPerSample: 8,
+                                   samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                   bytesPerRow: 0, bitsPerPixel: 0)!
+        rep.size = NSSize(width: px, height: px)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        Logo.appIconImage(pixels: px).draw(in: NSRect(x: 0, y: 0, width: px, height: px))
+        NSGraphicsContext.restoreGraphicsState()
+        try? rep.representation(using: .png, properties: [:])?.write(
+            to: dir.appendingPathComponent("icon_\(points)x\(points)\(scale == 2 ? "@2x" : "").png"))
     }
     exit(0)
 }
@@ -454,6 +480,104 @@ if args.count > 1, args[1] == "--typehost" {
     DispatchQueue.main.asyncAfter(deadline: .now() + 10) { exit(0) }
     app.run()
 }
+// No-text-box test: `open -W -n Verbaline.app --args --boxtest out.json`. Opens a separate host window (an app
+// can't ask Accessibility about its own windows): with a text box focused, dictation must paste into it and
+// put the clipboard back; with nothing focused, the words must stay on the clipboard. Clipboard text restored after.
+if args.count > 2, args[1] == "--boxhost" {   // "--boxhost field" or "--boxhost none"
+    let app = NSApplication.shared
+    app.setActivationPolicy(.regular)
+    let window = NSWindow(contentRect: NSRect(x: 240, y: 240, width: 480, height: 140), styleMask: [.titled], backing: .buffered, defer: false)
+    window.title = "Verbaline self-test — closes by itself"
+    let textView = PasteHostTextView(frame: NSRect(x: 0, y: 0, width: 480, height: 140))
+    if args[2] == "field" { window.contentView = textView } else { window.contentView = NSView(frame: textView.frame) }
+    window.makeKeyAndOrderFront(nil)
+    window.makeFirstResponder(args[2] == "field" ? textView : nil)
+    app.activate(ignoringOtherApps: true)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 8) { exit(0) }
+    app.run()
+}
+if args.count > 2, args[1] == "--boxtest" {
+    let out = URL(fileURLWithPath: args[2])
+    let pb = NSPasteboard.general
+    let saved = pb.string(forType: .string)
+    var r: [String: Any] = [:]
+    func wait(_ s: Double) { RunLoop.main.run(until: Date().addingTimeInterval(s)) }
+    func host(_ kind: String) -> NSRunningApplication? {
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
+        config.arguments = ["--boxhost", kind]
+        config.activates = true
+        var started: NSRunningApplication?
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: config) { app, _ in started = app }
+        let t0 = Date()
+        while started == nil, Date().timeIntervalSince(t0) < 5 { wait(0.05) }
+        wait(1.2)
+        started?.activate()
+        wait(0.4)
+        return started
+    }
+    // 1. A text box is focused: paste goes in, clipboard comes back.
+    if let field = host("field") {
+        r["frontIsHost"] = NSWorkspace.shared.frontmostApplication?.processIdentifier == field.processIdentifier
+        r["fieldAccepts"] = AXText.focusAcceptsText(in: field.processIdentifier) == true
+        pb.clearContents(); pb.setString("ORIGINAL-CLIP", forType: .string)
+        r["fieldOutcomePasted"] = TextInserter.insertReporting("boxtest pasted words", smartSpace: false) == .pasted
+        wait(1.2)
+        let box = AXText.focusedElement(in: field.processIdentifier)
+        r["fieldGotText"] = box.flatMap { AXText.string($0, kAXValueAttribute) }?.contains("boxtest pasted words") ?? false
+        r["clipboardRestoredAfterPaste"] = pb.string(forType: .string) == "ORIGINAL-CLIP"
+        field.terminate(); wait(0.5)
+    } else { r["fieldHostStarted"] = false }
+    // 2. Nothing focused: the words stay on the clipboard.
+    if let none = host("none") {
+        r["noFocusRejects"] = AXText.focusAcceptsText(in: none.processIdentifier) == false
+        r["noBoxOutcomeCopied"] = TextInserter.insertReporting("boxtest copied words") == .copiedNoTextBox
+        wait(1.2)
+        r["clipboardKeepsWords"] = pb.string(forType: .string) == "boxtest copied words"
+        none.terminate()
+    } else { r["noneHostStarted"] = false }
+    pb.clearContents(); if let saved { pb.setString(saved, forType: .string) }
+    if let data = try? JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys]) { try? data.write(to: out) }
+    exit(0)
+}
+
+// it must leave the words on the clipboard. Your clipboard text is restored at the end.
+if args.count > 2, args[1] == "--boxtest" {
+    let out = URL(fileURLWithPath: args[2])
+    let app = NSApplication.shared
+    app.setActivationPolicy(.regular)
+    let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 420, height: 120), styleMask: [.titled], backing: .buffered, defer: false)
+    let field = NSTextField(frame: NSRect(x: 20, y: 40, width: 380, height: 28))
+    window.contentView?.addSubview(field)
+    window.title = "Verbaline test — closes by itself"
+    window.makeKeyAndOrderFront(nil)
+    app.activate(ignoringOtherApps: true)
+    let pb = NSPasteboard.general
+    let saved = pb.string(forType: .string)
+    var r: [String: Any] = [:]
+    func wait(_ s: Double) { RunLoop.main.run(until: Date().addingTimeInterval(s)) }
+    wait(0.8)
+    // 1. Text field focused: pastes in, clipboard restored.
+    window.makeFirstResponder(field); wait(0.4)
+    r["fieldAccepts"] = AXText.focusAcceptsText(in: getpid()) == true
+    pb.clearContents(); pb.setString("ORIGINAL-CLIP", forType: .string)
+    let pasted = TextInserter.insertReporting("boxtest pasted words", smartSpace: false)
+    wait(1.2)
+    r["fieldOutcomePasted"] = pasted == .pasted
+    r["fieldGotText"] = field.stringValue.contains("boxtest pasted words")
+    r["clipboardRestoredAfterPaste"] = pb.string(forType: .string) == "ORIGINAL-CLIP"
+    // 2. Nothing focused: words stay on the clipboard.
+    window.makeFirstResponder(nil); wait(0.4)
+    r["noFocusRejects"] = AXText.focusAcceptsText(in: getpid()) == false
+    let copied = TextInserter.insertReporting("boxtest copied words")
+    wait(1.2)
+    r["noBoxOutcomeCopied"] = copied == .copiedNoTextBox
+    r["clipboardKeepsWords"] = pb.string(forType: .string) == "boxtest copied words"
+    pb.clearContents(); if let saved { pb.setString(saved, forType: .string) }
+    if let data = try? JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys]) { try? data.write(to: out) }
+    exit(0)
+}
+
 if args.count > 2, args[1] == "--typetest" {
     var report: [String: Any] = ["expected": typeSample]
     let config = NSWorkspace.OpenConfiguration()

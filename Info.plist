@@ -5,6 +5,7 @@
     <key>CFBundleIdentifier</key><string>local.verbaline.app</string>
     <key>CFBundleName</key><string>Verbaline</string>
     <key>CFBundleDisplayName</key><string>Verbaline</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleExecutable</key><string>Verbaline</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1</string>

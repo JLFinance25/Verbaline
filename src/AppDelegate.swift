@@ -384,6 +384,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Speech model (first launch: download)
 
     static let modelMissing = "Speech model not downloaded"
+    static let copiedNoBox = "Copied — no text box selected. Press ⌘V to paste"
     private let downloader = ModelDownloader()
 
     private func loadSpeechModel() {
@@ -707,9 +708,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let trail = String(selection.reversed().prefix(while: { $0.isWhitespace }).reversed())
                 pasted = lead + result + trail
             }
-            if TextInserter.insert(pasted, smartSpace: selection == nil) {
+            let outcome = TextInserter.insertReporting(pasted, smartSpace: selection == nil)
+            if outcome == .pasted {
                 overlay.flash(.badge(.command, selection == nil ? "Wrote it — ⌘Z to undo" : "Rewrote it — ⌘Z to undo"), seconds: 2.2)
                 play("Purr")
+            } else if outcome == .copiedNoTextBox {
+                overlay.flash(Self.copiedNoBox, seconds: 2.5)
             } else {
                 overlay.flash("Copied — turn on Accessibility for Verbaline to auto-paste", seconds: 3)
             }
@@ -733,7 +737,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         defer { writeStatus() }
         let notice = pendingNotice
         pendingNotice = nil
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Writing style for the app it's going into (formal email, casual texts…). Rules only, so the words and
+        // numbers never change; an AI-improved prompt is left exactly as written.
+        let styledText: String = {
+            guard prompt == nil else { return text }
+            let front = NSWorkspace.shared.frontmostApplication
+            let category = AppStyles.category(bundleID: front?.bundleIdentifier,
+                                              windowTitle: front.map { Self.frontWindowTitle($0.processIdentifier) } ?? nil)
+            return AppStyles.apply(style(for: category), to: text, category: category)
+        }()
+        let trimmed = styledText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             if pressEnter, AXIsProcessTrusted() {   // said only "press enter"
                 pressReturnSoon()
@@ -779,7 +792,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         let aiWritten: Bool = { if case .improved = prompt { return true }; return false }()
-        if typeOut, AXIsProcessTrusted(), !aiWritten {
+        // Type It Out needs a text box too; with none, fall through to paste, which keeps the words on the clipboard.
+        let noTextBox = NSWorkspace.shared.frontmostApplication.map { AXText.focusAcceptsText(in: $0.processIdentifier) == false } ?? false
+        if typeOut, AXIsProcessTrusted(), !aiWritten, !noTextBox {
             // Type it out: busy until done (fn gives the busy sound, Esc stops), clipboard untouched.
             mode = .processing
             fn.swallowEscape = true
@@ -803,11 +818,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         } else {
             let pasteStarted = ProcessInfo.processInfo.systemUptime
-            let inserted = TextInserter.insert(trimmed)
+            let outcome = TextInserter.insertReporting(trimmed)
             let pasted = ProcessInfo.processInfo.systemUptime
             timings["paste"] = pasted - pasteStarted
             timings["releaseToPaste"] = pasted - releasedAt
-            afterInsert(inserted, false)
+            if outcome == .copiedNoTextBox {
+                // Nowhere to paste: the words wait on the clipboard instead of disappearing.
+                overlay.flash(Self.copiedNoBox, seconds: 2.5)
+                play("Pop")
+            } else {
+                afterInsert(outcome == .pasted, false)
+            }
         }
         let rounded = timings.mapValues { ($0 * 1000).rounded() / 1000 }
         if !secureField {
@@ -1000,8 +1021,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .processing: symbol = "ellipsis.circle"
         default: symbol = "waveform"
         }
-        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Verbaline")
+        let image: NSImage? = symbol == "waveform" ? Logo.menuBarImage()
+                                                   : NSImage(systemSymbolName: symbol, accessibilityDescription: "Verbaline")
         image?.isTemplate = true
+        image?.accessibilityDescription = "Murmur"
         statusItem?.button?.image = image
         if panelWindow?.isShown == true { refreshPanel() }
     }
@@ -1160,6 +1183,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(.separator())
 
+        let styleItem = NSMenuItem(title: "Writing Style", action: nil, keyEquivalent: "")
+        let styleMenu = NSMenu()
+        for category in AppStyles.Category.allCases {
+            let current = style(for: category)
+            let catItem = NSMenuItem(title: "\(category.label): \(current.label)", action: nil, keyEquivalent: "")
+            let catMenu = NSMenu()
+            for option in AppStyles.Style.allCases {
+                let item = NSMenuItem(title: option.label, action: #selector(setStyle(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = [category.rawValue, option.rawValue]
+                item.state = option == current ? .on : .off
+                catMenu.addItem(item)
+            }
+            catItem.submenu = catMenu
+            styleMenu.addItem(catItem)
+        }
+        styleItem.submenu = styleMenu
+        menu.addItem(styleItem)
+
         let sounds = NSMenuItem(title: "Sounds", action: #selector(toggleSounds), keyEquivalent: "")
         sounds.target = self
         sounds.state = soundsOn ? .on : .off
@@ -1206,8 +1248,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func pasteLastNow() {
         guard let text = history.last?.text else { overlay.flash("No transcript yet", seconds: 1); return }
-        if !TextInserter.insert(text) {
-            overlay.flash("Copied — turn on Accessibility for Verbaline to auto-paste", seconds: 3)
+        switch TextInserter.insertReporting(text) {
+        case .pasted: break
+        case .copiedNoTextBox: overlay.flash(Self.copiedNoBox, seconds: 2.5)
+        case .copiedNoAccessibility: overlay.flash("Copied — turn on Accessibility for Verbaline to auto-paste", seconds: 3)
         }
     }
 
@@ -1237,6 +1281,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc private func toggleAI() { aiCleanup.toggle() }
     @objc private func toggleSounds() { soundsOn.toggle() }
+
+    // MARK: - Writing styles
+
+    private func style(for category: AppStyles.Category) -> AppStyles.Style {
+        AppStyles.Style(rawValue: defaults.string(forKey: "style.\(category.rawValue)") ?? "") ?? category.defaultStyle
+    }
+
+    @objc private func setStyle(_ sender: NSMenuItem) {
+        guard let pair = sender.representedObject as? [String], pair.count == 2 else { return }
+        defaults.set(pair[1], forKey: "style.\(pair[0])")
+    }
+
+    /// Title of the front app's focused window (a browser's tab title, e.g. "Inbox - Gmail"). nil if unknown.
+    private static func frontWindowTitle(_ pid: pid_t) -> String? {
+        var win: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(AXText.app(pid), kAXFocusedWindowAttribute as CFString, &win) == .success,
+              let win, CFGetTypeID(win) == AXUIElementGetTypeID() else { return nil }
+        var title: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(win as! AXUIElement, kAXTitleAttribute as CFString, &title) == .success else { return nil }
+        return title as? String
+    }
     @objc private func togglePromptCommand() { promptCommand.toggle() }
     @objc private func toggleIgnoreMacAudio() { ignoreMacAudio.toggle() }
     @objc private func openMeetingNotes() { if meetings.isRecording { meetings.stopRecording() } else { meetings.openWindow() } }

@@ -21,6 +21,8 @@ Verbaline asks for powerful permissions, so here is exactly what it does with th
     - after a paste, the text box that holds the pasted text, for Learn From My Edits;
     - your selection, for Command Mode;
     - the character just before the cursor, for smart spacing.
+    - whether the cursor is in something you can type into, so your words stay on the clipboard when there's no text box;
+    - the name of the app in front and, for web browsers, the title of the front window, to pick a writing style (never saved).
   - **Password fields** are skipped when the app marks them as password fields: they aren't read, and dictation into them isn't saved. Some apps (Electron apps in particular) don't report which field has focus, so this check can miss; don't dictate secrets.
   - **Electron apps:** sets `AXManualAccessibility` on them so their text boxes can be read.
 - **System Audio Recording:** not used by dictation. macOS asks for it only if you turn on the experimental meeting notes (below).
@@ -36,3 +38,4 @@ Verbaline asks for powerful permissions, so here is exactly what it does with th
 - **"Make this prompt better" and AI cleanup:** both use Apple's on-device model, which can occasionally reword things. Read AI-written text before you send it.
 - **History:** `history.jsonl` keeps dictations and Command Mode results in plain text until you clear it (menu: **Recent → Clear History…**). At launch, a history over 5,000 entries is cut to the newest 2,000.
 - **Clipboard copy:** when Command Mode falls back to ⌘C, a clipboard manager may record the copied selection.
+- **No-text-box copies:** when there's no text box, your dictation is left on the clipboard on purpose, so a clipboard manager may record it.

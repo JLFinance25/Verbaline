@@ -34,6 +34,7 @@ echo "▶ compiling"
 "${SW[@]}" src/MeetingTypes.swift src/MeetingSummarizer.swift tests/meeting_summarizer_test.swift -o "$BIN/meeting_summarizer_test" || exit 1
 "${SW[@]}" src/History.swift src/Stats.swift tests/stats_test.swift -o "$BIN/stats_test" || exit 1
 "${SW[@]}" src/PromptBoost.swift tests/prompt_boost_test.swift -o "$BIN/prompt_boost_test" || exit 1
+"${SW[@]}" src/AppStyles.swift tests/app_styles_test.swift -o "$BIN/app_styles_test" || exit 1
 "${SW[@]}" src/ModelDownloader.swift tests/support/model_paths_stub.swift tests/model_download_test.swift -o "$BIN/model_download_test" || exit 1
 WH="$(brew --prefix whisper-cpp)"; GG="$(brew --prefix ggml)"
 "${SW[@]}" -import-objc-header bridging.h -Xcc -I"$WH/include" -Xcc -I"$GG/include" -L"$WH/lib" -lwhisper -L"$GG/lib" -lggml \
@@ -50,6 +51,9 @@ WH="$(brew --prefix whisper-cpp)"; GG="$(brew --prefix ggml)"
 "${SW[@]}" src/MusicDucker.swift src/AudioRecorder.swift src/MicCapture.swift tests/ducker_test.swift -o "$BIN/ducker_test" || exit 1
 "${SW[@]}" src/MeetingTypes.swift src/MeetingAudio.swift src/SystemAudioTap.swift src/MicCapture.swift src/AudioRecorder.swift \
   tests/meeting_audio_test.swift -o "$BIN/meeting_audio_test" || exit 1
+"${SW[@]}" -import-objc-header bridging.h -Xcc -I"$WH/include" -Xcc -I"$GG/include" -L"$WH/lib" -lwhisper -L"$GG/lib" -lggml \
+  -Xlinker -rpath -Xlinker "$WH/lib" src/WhisperTranscriber.swift src/WhisperEngine.swift src/MeetingTypes.swift src/MeetingAudio.swift \
+  src/SystemAudioTap.swift src/MicCapture.swift src/AudioRecorder.swift tests/call_mode_test.swift -o "$BIN/call_mode_test" || exit 1
 VERBALINE_TESTING=1 ./build.sh > "$OUT/build.raw.txt" 2>&1 || { cat "$OUT/build.raw.txt"; exit 1; }
 APPDIR="${VERBALINE_BUILD_DIR:-$HOME/Library/Caches/Verbaline-build.noindex}/Verbaline.app"
 APPBIN="$APPDIR/Contents/MacOS/Verbaline"
@@ -72,8 +76,11 @@ run spelling "$BIN/spelling_test"
 # Meeting audio: --quick runs only the parts with no sound or mic; the full run also plays two quiet tones
 # (one app's tap must hear only its own) and opens the mic from a helper process (meeting start/end detection).
 if [[ $QUICK == 1 ]]; then run meeting_audio "$BIN/meeting_audio_test" --quick; else run meeting_audio "$BIN/meeting_audio_test"; fi
+# AirPods call mode: plays a clip and opens the mic, so full run only; skips itself without Bluetooth headphones.
+[[ $QUICK == 1 ]] || run call_mode "$BIN/call_mode_test" build/test_audio/long.wav
 run stats "$BIN/stats_test"
 run prompt_boost "$BIN/prompt_boost_test" --ai
+run app_styles "$BIN/app_styles_test"
 run model_download "$BIN/model_download_test"
 run cleaner "$BIN/cleaner_test" --prewarm
 QUICKARG=(); [[ $QUICK == 1 ]] && QUICKARG=(--quick)
@@ -98,6 +105,9 @@ run stress "$APPBIN" --selftest $(for i in 1 2 3 4 5; do printf '%s ' $A/ums.wav
 if [[ $QUICK == 0 ]]; then
   echo "▶ typing"   # types only into its own test window (posted to that process), then reads it back
   open -W -n "$APPDIR" --args --typetest "$PWD/$OUT/typing.raw.txt"
+  echo "▶ no text box"   # its own window: pastes into a field; with nothing focused, words stay on the clipboard
+  open -W -n "$APPDIR" --args --boxtest "$PWD/$OUT/box.json"
+  { cat "$OUT/box.json"; echo; python3 -c "import json,sys; d=json.load(open(sys.argv[1])); bad=[k for k,v in d.items() if v is False]; print('FAIL  box: '+', '.join(bad) if bad else 'PASS  box')" "$OUT/box.json"; } > "$OUT/box.raw.txt" 2>&1
   echo "▶ press enter"   # pastes into its own test window, presses Return there, reads it back
   open -W -n "$APPDIR" --args --entertest "$PWD/$OUT/enter.raw.txt"
   echo "▶ panel"   # opens the real menu bar panel in a test copy of the app, presses its buttons, checks placement
@@ -111,7 +121,7 @@ import json, sys
 try: d = json.load(open(sys.argv[1]))
 except Exception as e: print("FAIL  notes window: no report (app crashed or hung?) - %s" % e); sys.exit()
 need = ["windowExists", "lookSwitchChangesWindow", "autoFollowsMac"] + ["%s.%s" % (m, k) for m in ("light", "dark")
-        for k in ("live", "empty", "past", "note", "insights", "popup", "popupExists")]
+        for k in ("live", "empty", "past", "note", "insights", "popup", "popupExists", "popupEnded", "popupReady")]
 bad = [k for k in need if d.get(k) is not True] + ([] if d.get("tabCount") == 3 else ["tabCount"])
 print("FAIL  notes window: " + ", ".join(bad) if bad else "PASS  notes window")
 PY

@@ -14,12 +14,20 @@
 // we send ≤ 1,400 words of transcript per call to leave room for the instructions and a long answer, and
 // summarise longer meetings in pieces, then combine the pieces.
 //
-// Safety rails, because Jayden works in mortgage (a regulated industry):
+// Safety rails, because notes may cover mortgage details (a regulated industry):
 //  - every number in a loan detail, to-do, overview sentence or answer must appear in the transcript
 //    ("$450k" matches "450,000"; "20%" matches "twenty percent"); a loan detail or to-do with a number that
 //    doesn't is dropped, an overview sentence with one is removed, an answer with one becomes "couldn't find that";
 //  - loan details are only what was actually said: price, amounts, income and rate must contain a number;
 //  - a to-do or loan detail whose words mostly weren't said in the meeting is dropped;
+//  - regulated words (qualify, approve, eligible, lock, guarantee, afford, recommend…) and judgments ("a good rate")
+//    only where the meeting used them, next to the same number: "the loan amount would be $340,000" must not become
+//    "they would qualify for $340,000" — such a sentence, to-do, loan detail or answer is dropped (unbackedClaims);
+//  - to-dos are checked against what was said: the owner is whoever will do it ("please send me your pay stubs"
+//    is the clients'), wishes aren't to-dos ("we'd like to close by January"), and a task no one asked for or
+//    promised ("send car payment" from "one car payment") is dropped;
+//  - house style: the overview speaks to the officer as "you" (a first-person "Maria and I…" is rewritten),
+//    says each point once (a long meeting's pieces repeat), and the title is a short topic, never a cut sentence;
 //  - greedy sampling (same transcript → same note) and a time limit on every model call;
 //  - plain-text replies in a simple line format, not guided generation: a schema was refused on every mortgage
 //    meeting tried (see Engine).
@@ -300,6 +308,7 @@ extension MeetingSummarizer {
             if needsNumber && nums.isEmpty { return nil }
             if !unknownNumbers(in: v, known: known).isEmpty { return nil }
             if !mostlySaid(v, in: transcript) { return nil }
+            if !unbackedClaims(in: v, lines: transcript.components(separatedBy: "\n")).isEmpty { return nil }
             if v.count > 240 { v = String(v.prefix(237)) + "…" }
             return v.prefix(1).uppercased() + v.dropFirst()
         }
@@ -346,8 +355,18 @@ extension MeetingSummarizer {
                 if ["you", "loan officer", "the loan officer"].contains(who) { owner = .you }
                 else if ["them", "clients", "the clients", "client", "they"].contains(who) { owner = .them }
                 else { continue }
-                if let t = acceptTodo(String(l[l.index(after: colon)...]), known: known, transcript: transcript) { out.append(MeetingTodo(owner: owner, task: t)) }
-                else { dropped += 1 }
+                let said = transcript.map { $0.components(separatedBy: "\n") }
+                guard let (who, fixed) = fixTodo(owner: owner, task: String(l[l.index(after: colon)...])),
+                      let t = acceptTodo(fixed, known: known, transcript: transcript),
+                      said.map({ unbackedClaims(in: t, lines: $0).isEmpty }) ?? true else { dropped += 1; continue }
+                // Who does it, from what was said, beats the model's label (it tends to copy the speaker label).
+                var doer = who
+                if let transcript {
+                    let src = source(of: t, in: transcript)
+                    guard src.matched else { dropped += 1; continue }
+                    if let o = src.owner { doer = o }
+                }
+                out.append(MeetingTodo(owner: doer, task: t))
             }
             return (out, dropped)
         }
@@ -382,19 +401,340 @@ extension MeetingSummarizer {
             return out
         }
 
-        /// Same task said twice (in two pieces of a long meeting) is one to-do.
+        /// Same task said twice (in two pieces of a long meeting) is one to-do: the same words, or the same thing
+        /// with a verb of the same kind ("Send pay stubs" / "Upload pay stubs and W-2s"). The fuller one is kept.
         static func dedupe(_ todos: [MeetingTodo]) -> [MeetingTodo] {
-            var seen: [(Speaker, Set<String>)] = []
             var out: [MeetingTodo] = []
+            func key(_ t: String) -> Set<String> { Set(words(t).filter { $0.count >= 3 }) }
+            func object(_ t: String) -> Set<String> { Set(words(t).dropFirst().filter { $0.count >= 3 && !["the", "and", "for"].contains($0) }) }
             for t in todos {
-                let w = Set(words(t.task).filter { $0.count >= 3 })
-                let dup = seen.contains { s, sw in
-                    guard s == t.owner, !w.isEmpty, !sw.isEmpty else { return false }
-                    return Double(w.intersection(sw).count) / Double(min(w.count, sw.count)) >= 0.75
+                let w = key(t.task)
+                let i = out.firstIndex { o in
+                    guard o.owner == t.owner, !w.isEmpty else { return false }
+                    let ow = key(o.task)
+                    if !ow.isEmpty, Double(w.intersection(ow).count) / Double(min(w.count, ow.count)) >= 0.75 { return true }
+                    guard let v1 = words(o.task).first, let v2 = words(t.task).first, sameVerb(v1, v2) else { return false }
+                    let a = object(o.task), b = object(t.task)
+                    return !a.isEmpty && !b.isEmpty && (a.isSubset(of: b) || b.isSubset(of: a))
                 }
-                if !dup { out.append(t); seen.append((t.owner, w)) }
+                if let i { if wordCount(t.task) > wordCount(out[i].task) { out[i] = t } } else { out.append(t) }
             }
             return out
+        }
+
+        // MARK: wording (house style and regulated words)
+
+        /// Words that turn a fact into a promise in mortgage talk. A note may use one only where the meeting did:
+        /// "the loan amount would be $340,000" must not become "they would qualify for $340,000".
+        static let claimStems = ["qualif", "approv", "eligib", "guarant", "lock", "promis", "afford", "recommend", "commit", "entitle"]
+
+        /// The regulated words in `s` that the transcript doesn't back up. A word is backed when some transcript
+        /// line uses it — and, if `s` has numbers, when one line uses it together with one of those numbers
+        /// ("pre-approved" was said, but never next to $340,000, so "pre-approved for $340,000" isn't backed).
+        static func unbackedClaims(in s: String, lines: [String]) -> [String] {
+            let ws = words(s)
+            let nums = Set(numbers(in: s).map(rounded))
+            var out: [String] = []
+            for stem in claimStems where ws.contains(where: { $0.hasPrefix(stem) }) {
+                let saying = lines.filter { words($0).contains { $0.hasPrefix(stem) } }
+                let backed = nums.isEmpty ? !saying.isEmpty
+                    : saying.contains { !Set(numbers(in: $0).map(rounded)).isDisjoint(with: nums) }
+                if !backed { out.append(stem) }
+            }
+            // A rate or deal called good / low / competitive is a judgment; only the speaker may make it.
+            let ns = s as NSString
+            for m in judgmentRX.matches(in: s, range: NSRange(location: 0, length: ns.length)) {
+                let phrase = ns.substring(with: m.range).lowercased()
+                if !lines.contains(where: { $0.lowercased().contains(phrase) }) { out.append(phrase) }
+            }
+            return out
+        }
+
+        private static let judgmentRX = try! NSRegularExpression(
+            pattern: "\\b(?:good|great|best|low|lower|competitive|excellent|attractive|amazing) (?:rate|rates|deal|price|loan)\\b",
+            options: .caseInsensitive)
+
+        /// The transcript as one line per turn, for unbackedClaims.
+        static func spokenLines(_ lines: [TranscriptLine]) -> [String] { lines.map { oneLine($0.text) } }
+
+        /// Removes sentences that make a claim the meeting didn't (see unbackedClaims).
+        static func dropUnbackedSentences(_ text: String, lines: [String]) -> (String, Int) {
+            var dropped = 0
+            let paragraphs = text.components(separatedBy: "\n").map { para -> String in
+                var kept: [String] = []
+                para.enumerateSubstrings(in: para.startIndex..., options: .bySentences) { sub, _, _, _ in
+                    guard let sub else { return }
+                    if unbackedClaims(in: sub, lines: lines).isEmpty { kept.append(sub) } else { dropped += 1 }
+                }
+                return kept.joined().trimmingCharacters(in: .whitespaces)
+            }
+            var out = paragraphs.joined(separator: "\n")
+            while out.contains("\n\n\n") { out = out.replacingOccurrences(of: "\n\n\n", with: "\n\n") }
+            return (out.trimmingCharacters(in: .whitespacesAndNewlines), dropped)
+        }
+
+        private static let firstPersonRX = try! NSRegularExpression(pattern: "\\b(?:I|I'm|I've|I'll|I'd|me|my|myself|we|we're|we've|we'll|our|us)\\b")
+
+        private static let officerRX = try! NSRegularExpression(pattern: "\\b[Tt]he loan officer\\b")
+
+        /// true if the text needs secondPerson: it speaks as the officer ("Maria and I met") or about them
+        /// ("The loan officer explained") instead of to them.
+        static func needsSecondPerson(_ s: String) -> Bool {
+            hasFirstPerson(s) || officerRX.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
+        }
+
+        /// true if the text (outside quotes) speaks as the loan officer: "Maria and I met", "we discussed".
+        static func hasFirstPerson(_ s: String) -> Bool {
+            let unquoted = s.replacingOccurrences(of: "[\"“][^\"”]*[\"”]", with: "", options: .regularExpression)
+            return firstPersonRX.firstMatch(in: unquoted, range: NSRange(unquoted.startIndex..., in: unquoted)) != nil
+        }
+
+        /// House style: the loan officer is "you". Rewrites a first-person overview the model wrote anyway
+        /// ("Maria and I had a meeting" → "You and Maria had a meeting", "I will send" → "you will send").
+        /// "we/our/us" in an overview is the officer and the clients together, so it becomes "you/your/you".
+        /// Quoted speech is left alone.
+        static func secondPerson(_ s: String) -> String {
+            var segments: [String] = []
+            var rest = Substring(s)
+            while let open = rest.firstIndex(where: { $0 == "\"" || $0 == "“" }),
+                  let close = rest[rest.index(after: open)...].firstIndex(where: { $0 == "\"" || $0 == "”" }) {
+                segments.append(rewriteFirstPerson(String(rest[..<open])))
+                segments.append(String(rest[open...close]))
+                rest = rest[rest.index(after: close)...]
+            }
+            segments.append(rewriteFirstPerson(String(rest)))
+            return capitalizeSentences(segments.joined())
+        }
+
+        private static func rewriteFirstPerson(_ s: String) -> String {
+            var t = s
+            let swaps: [(String, String)] = [
+                ("\\b([A-Z][a-z]+(?: and [A-Z][a-z]+)?) and I\\b", "you and $1"),
+                ("\\bI am\\b", "you are"), ("\\bI was\\b", "you were"), ("\\bI'm\\b", "you're"), ("\\bI've\\b", "you've"),
+                ("\\bI'll\\b", "you'll"), ("\\bI'd\\b", "you'd"), ("\\bI\\b", "you"),
+                ("\\bmyself\\b", "yourself"), ("\\b[Mm]y\\b", "your"), ("\\bme\\b", "you"),
+                ("\\b[Ww]e're\\b", "you're"), ("\\b[Ww]e've\\b", "you've"), ("\\b[Ww]e'll\\b", "you'll"),
+                ("\\b[Ww]e are\\b", "you are"), ("\\b[Ww]e were\\b", "you were"), ("\\b[Ww]e\\b", "you"),
+                ("\\b[Oo]ur\\b", "your"), ("\\bus\\b", "you"),
+                ("\\b[Tt]he loan officer's\\b", "your"), ("\\b[Tt]he loan officer is ", "you are "), ("\\b[Tt]he loan officer was ", "you were "),
+                ("\\b[Tt]he loan officer has\\b", "you have"), ("\\b[Tt]he loan officer\\b", "you"),
+            ]
+            for (p, r) in swaps { t = t.replacingOccurrences(of: p, with: r, options: .regularExpression) }
+            return t
+        }
+
+        /// Capital letter at the start of the text and after . ! ? (not after a decimal point).
+        static func capitalizeSentences(_ s: String) -> String {
+            var out = ""
+            var cap = true
+            var prev: Character = " "
+            for ch in s {
+                if cap && ch.isLetter { out.append(contentsOf: ch.uppercased()); cap = false }
+                else { out.append(ch); if ch.isLetter || ch.isNumber { cap = false } }
+                if ch.isWhitespace && ".!?".contains(prev) { cap = true }
+                if ch == "\n" { cap = true }
+                prev = ch
+            }
+            return out
+        }
+
+        // MARK: repetition
+
+        private static let fillerWords: Set<String> = ["the", "and", "you", "they", "their", "that", "with", "for", "was", "were",
+                                                       "about", "also", "would", "this", "from", "have", "has", "had", "are", "them",
+                                                       "explained", "told", "said", "discussed", "mentioned", "noted", "noting"]
+
+        private static func contentWords(_ s: String) -> Set<String> {
+            Set(words(s).filter { $0.count >= 3 && !fillerWords.contains($0) }.map { String($0.prefix(6)) })
+        }
+
+        /// true if two sentences say much the same thing (most of either one's words are in the other). A longer
+        /// sentence that adds a fact ("..., who are first-time buyers") isn't a repeat.
+        static func sameSentence(_ a: String, _ b: String) -> Bool {
+            let wa = contentWords(a), wb = contentWords(b)
+            guard !wa.isEmpty, !wb.isEmpty else { return false }
+            if min(wa.count, wb.count) < 3 { return wa == wb }   // too short to judge by overlap
+            let shared = Double(wa.intersection(wb).count)
+            if shared / Double(max(wa.count, wb.count)) >= 0.7 { return true }
+            // The same numbers about the same thing, worded differently: "a $410 monthly car payment" and
+            // "a car payment of $410 a month".
+            let na = Set(numbers(in: a).map(rounded)), nb = Set(numbers(in: b).map(rounded))
+            guard !na.isEmpty, !nb.isEmpty, na.isSubset(of: nb) || nb.isSubset(of: na) else { return false }
+            return shared / Double(min(wa.count, wb.count)) >= 0.5
+        }
+
+        static func sentences(_ s: String) -> [String] {
+            var out: [String] = []
+            s.enumerateSubstrings(in: s.startIndex..., options: .bySentences) { sub, _, _, _ in
+                if let t = sub?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty { out.append(t) }
+            }
+            return out
+        }
+
+        /// true if (nearly) everything `a` says is also in `b`: "you need permission to pull credit" is inside
+        /// "you need permission to pull their credit, and you'll send the letter within a day or two".
+        static func saysLess(_ a: String, than b: String) -> Bool {
+            let wa = contentWords(a), wb = contentWords(b)
+            guard wa.count >= 4 else { return false }
+            return Double(wa.intersection(wb).count) / Double(wa.count) >= 0.8
+        }
+
+        /// Drops sentences that repeat an earlier one (in a long meeting the same point comes up in several pieces).
+        /// A later sentence that says everything an earlier one did and more replaces it. Keeps paragraphs; a
+        /// paragraph left empty goes.
+        static func dropRepeatedSentences(_ text: String) -> (String, Int) {
+            // (paragraph, sentence) in order; nil = removed.
+            var all: [(Int, String?)] = []
+            var dropped = 0
+            for (p, para) in text.components(separatedBy: "\n").enumerated() {
+                for s in sentences(para) {
+                    let earlier = all.indices.filter { all[$0].1 != nil }
+                    if earlier.contains(where: { sameSentence(all[$0].1!, s) || saysLess(s, than: all[$0].1!) }) { dropped += 1; continue }
+                    for i in earlier where saysLess(all[i].1!, than: s) { all[i].1 = nil; dropped += 1 }
+                    all.append((p, s))
+                }
+                all.append((p, ""))   // keeps empty lines (paragraph breaks)
+            }
+            let count = text.components(separatedBy: "\n").count
+            let paras = (0..<count).map { p in all.filter { $0.0 == p }.compactMap { $0.1 }.filter { !$0.isEmpty }.joined(separator: " ") }
+            var out = paras.joined(separator: "\n")
+            while out.contains("\n\n\n") { out = out.replacingOccurrences(of: "\n\n\n", with: "\n\n") }
+            return (out.trimmingCharacters(in: .whitespacesAndNewlines), dropped)
+        }
+
+        // MARK: title
+
+        private static let danglingEnd: Set<String> = ["to", "and", "or", "the", "a", "an", "of", "for", "with", "about", "on", "in",
+                                                       "at", "by", "from", "that", "is", "was", "were", "had", "has"]
+        private static let sentenceWords: Set<String> = ["had", "has", "have", "was", "were", "is", "are", "met", "discussed", "talked",
+                                                         "today", "you", "they", "she", "he", "i", "we", "me", "my", "our"]
+
+        /// A short topic title ("Purchase pre-approval"), not a sentence ("Maria and I had a meeting today to").
+        static func isTopicTitle(_ t: String) -> Bool {
+            let w = t.split(separator: " ").map { $0.lowercased().trimmingCharacters(in: .punctuationCharacters) }
+            guard (1...6).contains(w.count), let last = w.last, !danglingEnd.contains(last) else { return false }
+            return !w.contains { sentenceWords.contains($0) } && !t.contains(",") && !t.contains(".")
+        }
+
+        /// A plain topic title from what the meeting was about, used when the model's title isn't one.
+        static func topicTitle(transcript: String) -> String {
+            let t = transcript.lowercased()
+            if t.contains("refinanc") || t.contains("refi ") { return "Refinance review" }
+            if t.contains("heloc") || t.contains("home equity") { return "Home equity options" }
+            if t.contains("pre-approv") || t.contains("preapprov") || t.contains("pre approv") { return "Purchase pre-approval" }
+            if ["down payment", "purchase price", "new house", "new home", "price range", "make an offer", "making offers"].contains(where: t.contains) {
+                return "Home purchase planning"
+            }
+            if t.contains("rate lock") || t.contains("lock the rate") { return "Rate lock review" }
+            return "Client meeting"
+        }
+
+        // MARK: to-do wording
+
+        private static let notTaskRX = try! NSRegularExpression(pattern:
+            "^(?:sounds good|okay|ok|great|thanks|thank you|got it|yes|sure)\\b|\\b(?:would like to|'d like to|hope to|hoping to|want to|wants to|if possible)\\b|^(?:close|closing)\\b",
+            options: .caseInsensitive)
+        private static let askVerbs = "send|upload|provide|submit|email|bring|gather|share|sign|forward"
+        private static let clientDocs = ["pay stub", "paystub", "w-2", "w2", "bank statement", "tax return", "1099", "photo id", "driver's license", "lease"]
+
+        /// Fixes who owns a to-do and how it reads. The owner is whoever does the task, not whoever said it: the
+        /// officer saying "please send me your pay stubs" is a task for Them ("Send last two pay stubs"). Wishes and
+        /// goals ("we'd like to close by January") aren't tasks: nil.
+        static func fixTodo(owner: Speaker, task: String) -> (Speaker, String)? {
+            var t = oneLine(task).trimmingCharacters(in: CharacterSet(charactersIn: " .;-•*\"'"))
+            t = t.replacingOccurrences(of: "^(?:please|can you|could you|you need to|they need to|need to)\\s+", with: "",
+                                       options: [.regularExpression, .caseInsensitive])
+            if notTaskRX.firstMatch(in: t, range: NSRange(t.startIndex..., in: t)) != nil { return nil }
+            var who = owner
+            let lower = t.lowercased()
+            let askedOfThem = lower.range(of: "^(?:\(askVerbs))\\b.*\\b(?:me|your)\\b", options: .regularExpression) != nil
+            let theirDocs = lower.range(of: "^(?:\(askVerbs))\\b", options: .regularExpression) != nil
+                && clientDocs.contains(where: lower.contains) && !lower.contains(" to ")
+            if owner == .you && (askedOfThem || theirDocs) {
+                who = .them
+                t = t.replacingOccurrences(of: "^((?:\(askVerbs)))\\s+me\\b\\s*", with: "$1 ", options: [.regularExpression, .caseInsensitive])
+                t = t.replacingOccurrences(of: "\\byour\\s+", with: "", options: [.regularExpression, .caseInsensitive])
+                t = t.replacingOccurrences(of: "\\s+to me\\b", with: "", options: [.regularExpression, .caseInsensitive])
+            } else if owner == .them, lower.range(of: "^(?:\(askVerbs))\\s+me\\b", options: .regularExpression) != nil {
+                who = .you   // a client asking the officer: "send me the checklist"
+                t = t.replacingOccurrences(of: "^((?:\(askVerbs)))\\s+me\\b\\s*", with: "$1 them ", options: [.regularExpression, .caseInsensitive])
+            }
+            if who == .them { t = t.replacingOccurrences(of: "\\byour\\s+", with: "their ", options: .regularExpression) }
+            if who == .you { t = t.replacingOccurrences(of: "\\bmyself\\b", with: "yourself", options: .regularExpression) }
+            t = t.replacingOccurrences(of: "  ", with: " ").trimmingCharacters(in: .whitespaces)
+            guard t.count >= 3 else { return nil }
+            return (who, t.prefix(1).uppercased() + t.dropFirst())
+        }
+
+        // MARK: to-dos against what was said
+
+        private static let promiseRX = try! NSRegularExpression(pattern: "\\b(?:i will|i'll|i'm going to|i can|let me|we will|we'll|we're going to|we can)\\b", options: .caseInsensitive)
+        private static let requestRX = try! NSRegularExpression(pattern: "\\b(?:please|can you|could you|you need to|i need you to|you'll need to|make sure to)\\b", options: .caseInsensitive)
+        private static let verbFamilies: [Set<String>] = [["send", "email", "forw", "shar", "mail"], ["uplo", "send", "subm", "prov"],
+                                                           ["sche", "set"], ["revi", "go"], ["call", "reac"]]
+
+        private static func sameVerb(_ a: String, _ b: String) -> Bool {
+            let x = String(a.lowercased().prefix(4)), y = String(b.lowercased().prefix(4))
+            return x == y || verbFamilies.contains { $0.contains(x) && $0.contains(y) }
+        }
+
+        private static let negationRX = try! NSRegularExpression(pattern: "\\b(?:don't|do not|not|never|shouldn't|should not|won't|avoid|let's not)\\b", options: .caseInsensitive)
+        private static let taskTalkRX = try! NSRegularExpression(pattern: "\\b(?:need|needs|will|please|can you|could you|let's|let me|going to)\\b|'ll\\b", options: .caseInsensitive)
+
+        /// Where a to-do came from in the transcript, and who will do it. `matched` = the task was said: a clause
+        /// with the task's verb and most of its words, or two neighbouring lines with most of its words and some
+        /// task talk ("I need", "we'll", "please"). The model makes up tasks from plain facts ("send car payment"
+        /// from "one car payment, $410 a month"); those match nothing. `owner`, when the clause is a clear promise
+        /// or request: a "You:" line saying "I'll send you the checklist" is the officer's task; "please send me
+        /// your pay stubs" is the clients'.
+        static func source(of task: String, in transcript: String) -> (matched: Bool, owner: Speaker?) {
+            guard let verb = words(task).first else { return (false, nil) }
+            let want = contentWords(task).subtracting([String(verb.prefix(6))])
+            var matched = false
+            let raws = transcript.components(separatedBy: "\n")
+            // Something the officer said not to do isn't a task: "don't open any new credit cards" must never
+            // become "Them: Open new credit cards".
+            if !want.isEmpty {
+                for raw in raws {
+                    for clause in raw.components(separatedBy: CharacterSet(charactersIn: ",.;?!")) {
+                        let hits = want.intersection(contentWords(clause)).count
+                        if Double(hits) / Double(want.count) >= 0.6, hits >= min(2, want.count),
+                           negationRX.firstMatch(in: clause, range: NSRange(clause.startIndex..., in: clause)) != nil { return (false, nil) }
+                    }
+                }
+            }
+            for (i, raw) in raws.enumerated() {
+                let speaker: Speaker
+                let line: String
+                if raw.hasPrefix("You: ") { speaker = .you; line = String(raw.dropFirst(5)) }
+                else if raw.hasPrefix("Them: ") { speaker = .them; line = String(raw.dropFirst(6)) }
+                else { continue }
+                if !matched, !want.isEmpty {
+                    let window = raws[i..<min(raws.count, i + 2)].joined(separator: " ")
+                    let hits = want.intersection(contentWords(window)).count
+                    if Double(hits) / Double(want.count) >= 0.6, hits >= min(2, want.count),
+                       taskTalkRX.firstMatch(in: window, range: NSRange(window.startIndex..., in: window)) != nil { matched = true }
+                }
+                for clause in line.components(separatedBy: CharacterSet(charactersIn: ",.;?!")) {
+                    let cw = words(clause)
+                    guard cw.contains(where: { sameVerb($0, verb) }) else { continue }
+                    let overlap = want.isEmpty ? 1 : Double(want.intersection(contentWords(clause)).count) / Double(want.count)
+                    guard overlap >= 0.5 else { continue }
+                    matched = true
+                    // The promise or request nearest before the verb decides: "I'll run credit and send you the
+                    // letter" is the speaker's promise to send.
+                    let ns = clause as NSString
+                    let verbAt = clause.lowercased().split(whereSeparator: { !($0.isLetter || $0 == "'") })
+                        .first(where: { sameVerb(String($0), verb) }).map { ns.range(of: String($0), options: .caseInsensitive).location } ?? NSNotFound
+                    guard verbAt != NSNotFound else { continue }
+                    let before = NSRange(location: 0, length: verbAt)
+                    let p = promiseRX.matches(in: clause, range: before).last?.range.location ?? -1
+                    let q = requestRX.matches(in: clause, range: before).last?.range.location ?? -1
+                    if p > q { return (true, speaker) }
+                    if q > p { return (true, speaker == .you ? .them : .you) }
+                }
+            }
+            return (matched, nil)
         }
 
         static func cleanTitle(_ s: String, fallback: String) -> String {
@@ -403,9 +743,8 @@ extension MeetingSummarizer {
             t = meetingNotCall(t)
             // A title is a noun phrase, so a last word "call" is the noun: "Pre-approval call".
             t = t.replacingOccurrences(of: "\\bcall$", with: "meeting", options: [.regularExpression, .caseInsensitive])
-            let w = t.split(separator: " ")
-            if w.count > 8 { t = w.prefix(8).joined(separator: " ") }
-            return t.isEmpty ? fallback : t
+            // A sentence or a cut-off phrase isn't a title; cutting it shorter would only hide that.
+            return isTopicTitle(t) ? t : fallback
         }
 
         /// Keeps the overview in plain paragraphs: no headings, no "Here is the overview:" lead-in, "the call" → "the meeting".
@@ -501,7 +840,10 @@ private final class Engine {
     Rules:
     - Use only what was said in the transcript. Never invent names, numbers, dates, amounts or rates.
     - Copy every number exactly as it appears in the transcript.
-    - Write plain, friendly English. Speak to the loan officer as "you". Call the clients by name if their names were said.
+    - Write plain, friendly English from the loan officer's side: the loan officer is "you" and the clients are \
+    "they", or their names if their names were said. Never write "I", "me", "we" or "our".
+    - For qualifying, approval, rates, rate locks and loan amounts, keep the speaker's own words. If someone said \
+    "the loan amount would be" an amount, write that; never turn it into "they qualify for" or "they are approved for".
     - Always say "meeting", never "call".
     """
 
@@ -528,10 +870,16 @@ private final class Engine {
 
         // Overview. Short meeting: straight from the transcript (keeps the detail). Long: each piece summarised,
         // then the summaries combined (in rounds, if even they are too long for one call).
+        // Length follows the meeting: a 2-minute chat gets a few sentences (asking for 300 words invites filler and
+        // made-up detail), a long meeting at most ~450 words (a 2–3 minute read).
+        let spokenWords = C.wordCount(fullText)
+        let most = min(450, max(60, spokenWords * 6 / 10)), least = max(30, most / 2)
+        let shape = most < 150 ? "one short paragraph" : "3 to 5 short paragraphs separated by blank lines"
         let overviewTask = """
-        Write an overview of this meeting for the loan officer: 3 to 5 short paragraphs separated by blank lines, \
-        about 200 to 400 words. Cover what the meeting was about, the key facts and numbers, what was decided, \
-        open questions, and what happens next. Reply with the overview only.
+        Write an overview of this meeting for the loan officer: \(shape), about \(least) to \(most) words. Start with \
+        what the meeting was about, then the key facts and numbers, what was decided, open questions, and what happens \
+        next. Write "you" for the loan officer, for example "You met with Maria to talk about" or "You explained". \
+        Reply with the overview only.
         """
         var overview = ""
         if pieces.count == 1 {
@@ -541,12 +889,21 @@ private final class Engine {
             var summaries: [String] = []
             for (i, piece) in pieces.enumerated() {
                 do {
-                    let s = try await ask("This is part \(i + 1) of \(pieces.count) of a meeting transcript. Summarize what was discussed in this part in 4 to 8 sentences, with the key facts and numbers. Speak to the loan officer as \"you\". Reply with the summary only.",
+                    let s = try await ask("This is part \(i + 1) of \(pieces.count) of a meeting transcript. Summarize what was discussed in this part in 4 to 8 sentences, with the key facts and numbers. Write \"you\" for the loan officer. Reply with the summary only.",
                                           Self.wrap(C.render(piece)), maxTokens: 450)
-                    summaries.append(C.oneLine(C.cleanOverview(s)))
+                    let sum = C.oneLine(C.cleanOverview(s))
+                    summaries.append(C.needsSecondPerson(sum) ? C.secondPerson(sum) : sum)
                 } catch { diag.append("piece \(i + 1) failed: \(Self.describe(error))"); gaps.insert(.overview) }
             }
-            var parts = summaries
+            // The same point often comes up in several pieces; say it once before combining, or the combined overview
+            // repeats it once per piece (measured: five paragraphs that each began "You discussed the pre-approval...").
+            var parts: [String] = []
+            var seen: [String] = []
+            for sum in summaries {
+                let fresh = C.sentences(sum).filter { s in !seen.contains { C.sameSentence($0, s) } }
+                seen += fresh
+                if !fresh.isEmpty { parts.append(fresh.joined(separator: " ")) }
+            }
             while parts.count > 1 && C.wordCount(parts.joined(separator: "\n")) > MeetingSummarizer.wordsPerPiece {
                 let groups = C.groups(parts, maxWords: MeetingSummarizer.wordsPerPiece)
                 if groups.count >= parts.count { break }   // no progress; send what we have
@@ -555,17 +912,31 @@ private final class Engine {
                 parts = merged
             }
             if !parts.isEmpty {
-                let notes = parts.enumerated().map { "Part \($0.offset + 1): \($0.element)" }.joined(separator: "\n\n")
+                let notes = parts.joined(separator: "\n\n")
+                let combineTask = """
+                    These are notes from one long meeting, in order. Merge them into one overview for the loan officer: \
+                    3 to 5 short paragraphs separated by blank lines, about 250 to 450 words. Group the paragraphs by \
+                    topic (the clients and their plans, the numbers, documents and next steps), not by part of the meeting. \
+                    Say each fact once. Start each paragraph differently, and never mention parts or notes. Write "you" for \
+                    the loan officer. Reply with the overview only.
+                    """
                 do {
-                    overview = try await ask(overviewTask.replacingOccurrences(of: "of this meeting", with: "of this meeting from the summaries of its parts (in order)"),
-                                             "<notes>\n\(notes)\n</notes>", maxTokens: 1000)
+                    overview = try await ask(combineTask, "<notes>\n\(notes)\n</notes>", maxTokens: 1000)
                 } catch {
                     diag.append("overview failed: \(Self.describe(error))"); gaps.insert(.overview)
                     overview = summaries.joined(separator: "\n\n")
                 }
             }
         }
-        let (safe, droppedSentences) = C.dropSentencesWithUnknownNumbers(C.dropUnfinishedEnding(C.cleanOverview(overview)), known: known)
+        // Clean-up, in order: lead-ins and headings, a cut-off last sentence, house style ("you", never "I"), repeats,
+        // then the safety rails (invented numbers, claims the meeting didn't make).
+        var text = C.dropUnfinishedEnding(C.cleanOverview(overview))
+        if C.needsSecondPerson(text) { text = C.secondPerson(text); diag.append("overview rewritten as \"you\"") }
+        let (unrepeated, repeats) = C.dropRepeatedSentences(text)
+        if repeats > 0 { diag.append("\(repeats) repeated sentence(s) dropped") }
+        let (backed, claims) = C.dropUnbackedSentences(unrepeated, lines: C.spokenLines(lines))
+        if claims > 0 { diag.append("\(claims) overview sentence(s) with an unsaid claim dropped") }
+        let (safe, droppedSentences) = C.dropSentencesWithUnknownNumbers(backed, known: known)
         if droppedSentences > 0 { diag.append("\(droppedSentences) overview sentence(s) dropped") }
         note.overview = safe.isEmpty ? "Verbaline couldn't write an overview for this meeting. The full transcript is below." : safe
         if gaps.contains(.overview) && !safe.isEmpty { note.overview += "\n\n" + MeetingSummarizer.Gaps.incompleteOverview }
@@ -573,12 +944,13 @@ private final class Engine {
         // Title, from the overview (short, cheap, and never sees a raw number it could garble).
         if !safe.isEmpty {
             do {
-                let t = try await ask("Write a title for these meeting notes: 3 to 6 words naming what the meeting was about, like \"Purchase pre-approval chat\" or \"Refinance options review\". No names, no quotes. Reply with the title only.",
+                let t = try await ask("Name the topic of these meeting notes in 2 to 5 words, like a folder label: for example \"Purchase pre-approval\", \"Refinance options\" or \"Rate lock questions\". Not a sentence, no names, no quotes. Reply with the topic only.",
                                       "<notes>\n\(safe)\n</notes>", maxTokens: 24)
-                note.title = C.cleanTitle(t, fallback: base.title)
-                if !C.unknownNumbers(in: note.title, known: known).isEmpty { note.title = base.title }
+                note.title = C.cleanTitle(t, fallback: "")
+                if !C.unknownNumbers(in: note.title, known: known).isEmpty || !C.unbackedClaims(in: note.title, lines: C.spokenLines(lines)).isEmpty { note.title = "" }
             } catch { diag.append("title failed: \(Self.describe(error))") }
         }
+        if note.title.isEmpty { note.title = C.topicTitle(transcript: fullText); diag.append("title from topic words") }
 
         // To-dos, per piece.
         var todos: [MeetingTodo] = []
@@ -587,8 +959,12 @@ private final class Engine {
             do {
                 let out = try await ask("""
                     List the next steps from this meeting: only tasks that someone promised or was asked to do. Write \
-                    one per line as "You: <task>" for the loan officer or "Them: <task>" for the clients, for example \
-                    "You: Send the pre-approval letter" or "Them: Upload pay stubs". Leave out questions, ideas that \
+                    one per line as "Loan officer: <task>" when the loan officer will do it, or "Clients: <task>" when \
+                    the clients will do it. Label each task by who will do it, not by who said it: when the loan officer \
+                    says "send me your <document>", write "Clients: Send <document>". Write each task as a short \
+                    action starting with a verb, at most 15 words, saying exactly what (which documents) and any \
+                    deadline that was said. Give each task \
+                    its own line. Leave out questions, wishes and goals (such as hoping to close by a date), ideas that \
                     were not agreed, and anything the loan officer said not to do. If there are none, reply None.
                     """, Self.wrap(C.render(piece)), maxTokens: 300)
                 let (got, dropped) = C.parseTodos(out, known: known, transcript: C.render(piece))
@@ -657,6 +1033,7 @@ private final class Engine {
             let a = C.cleanOverview(out)
             if a.isEmpty || C.isNotFound(a) { return (MeetingSummarizer.notFound, "not found (\(picked.count) of \(lines.count) lines read)") }
             if !C.unknownNumbers(in: a, known: known).isEmpty { return (MeetingSummarizer.notFound, "answer had a number not in the transcript: \(a)") }
+            if !C.unbackedClaims(in: a, lines: C.spokenLines(picked)).isEmpty { return (MeetingSummarizer.notFound, "answer made a claim the meeting didn't: \(a)") }
             return (a, "answered from \(picked.count) of \(lines.count) lines")
         } catch {
             return ("Verbaline couldn't answer that right now (\(Self.describe(error))). Try again in a moment.", "failed: \(Self.describe(error))")

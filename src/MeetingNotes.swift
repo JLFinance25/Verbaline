@@ -133,7 +133,7 @@ final class MeetingNotes {
         model.isRecording = true
         model.tab = .live
         onNotice("Taking notes")
-        pump = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.pumpAudio() }
+        pump = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.pumpAudio() }
         clock = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.model.elapsed = ProcessInfo.processInfo.systemUptime - self.startedUptime
@@ -171,8 +171,8 @@ final class MeetingNotes {
         self.recorder = nil
         self.transcriber = nil
         model.isRecording = false
-        model.statusText = "Writing your notes…"
-        onNotice("Writing your notes…")
+        model.statusText = "Meeting ended. Writing your notes…"
+        popup.showEnded()
         let appName = app?.name ?? Self.wholeMac
         let date = startedAt
         let duration = ProcessInfo.processInfo.systemUptime - startedUptime
@@ -191,20 +191,26 @@ final class MeetingNotes {
         }
     }
 
+    /// The note is written: save it, put it at the top of Past meetings, and clear the Live tab for the next meeting.
     private func finished(_ note: MeetingNote, gaps: MeetingSummarizer.Gaps) {
+        let saved: Bool
         do {
             _ = try store.save(note, gaps: gaps)
             model.statusText = nil
-            onNotice("Notes saved")
+            saved = true
         } catch {
-            model.statusText = "Couldn't save the note: \(error.localizedDescription). It's shown below; copy it somewhere safe."
-            onNotice("Couldn't save the note")
+            model.statusText = "Couldn't save the note: \(error.localizedDescription). It's open under Past meetings; copy it somewhere safe."
+            saved = false
         }
         model.pastNotes.removeAll { $0.date == note.date }
         model.pastNotes.insert(note, at: 0)
         model.openNote = note
         model.tab = .past
-        window.show()
+        // A fresh start for the next meeting (only if one hasn't already begun while this note was being written).
+        if !isRecording { model.lines = []; model.exchanges = []; model.elapsed = 0 }
+        popup.showReady(title: saved ? "Your notes are ready" : "Couldn't save your notes",
+                        detail: saved ? note.title : "They're open in the notes window; copy them somewhere safe.",
+                        onOpen: { [weak self] in self?.window.show() })
     }
 
     /// Quitting mid-meeting: there's no time to summarise, so save the transcript so far.

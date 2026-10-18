@@ -46,8 +46,22 @@ final class SystemAudioTap {
 
     var isRunning: Bool { procID != nil }
     var startedAt: TimeInterval? { lock.withLock { _startedAt } }
-    /// The rate of what takeNew() returns (known after start()).
-    var sampleRate: Double { format?.sampleRate ?? 48_000 }
+    /// The rate of what takeNew() returns (known after start()). This is the rate the tap's device really runs at,
+    /// which isn't always the tap format's: AirPods in call mode run at 24 kHz while the format still says 48 kHz
+    /// (measured: 23,931 samples/s arrived), and trusting the format played the other side at double speed.
+    var sampleRate: Double { startRate ?? format?.sampleRate ?? 48_000 }
+    private var startRate: Double?
+
+    /// What the device the tap runs on is doing right now (it changes when AirPods switch to or from call mode).
+    var currentDeviceRate: Double? {
+        guard aggID != kAudioObjectUnknown else { return nil }
+        var rate = Float64(0)
+        var size = UInt32(MemoryLayout<Float64>.size)
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate,
+                                              mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        guard AudioObjectGetPropertyData(aggID, &addr, 0, nil, &size, &rate) == noErr, rate > 0 else { return nil }
+        return rate
+    }
 
     func start() throws {
         guard procID == nil else { return }
@@ -78,6 +92,7 @@ final class SystemAudioTap {
         ]
         err = AudioHardwareCreateAggregateDevice(agg as CFDictionary, &aggID)
         guard err == noErr else { cleanup(); throw TapError.aggregate(err) }
+        startRate = currentDeviceRate
 
         var newProc: AudioDeviceIOProcID?
         err = AudioDeviceCreateIOProcIDWithBlock(&newProc, aggID, queue) { [weak self] _, input, _, _, _ in
@@ -93,7 +108,7 @@ final class SystemAudioTap {
     func stop() -> [Float] {
         guard procID != nil else { return [] }
         cleanup()
-        let (mono, rate) = lock.withLock { (native, format?.sampleRate ?? 48_000) }
+        let (mono, rate) = lock.withLock { (native, sampleRate) }
         return Self.resample(mono, from: rate, to: 16_000)
     }
 

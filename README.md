@@ -67,6 +67,8 @@ Say your request, then finish with "make this prompt better". Verbaline pastes a
 
 ## Features
 
+- **Writing styles.** Formats your dictation for the kind of app it's going into. See below.
+- **No text box? It's on your clipboard.** If nothing you can type into is selected, your words stay on the clipboard and Verbaline says "Copied — no text box selected. Press ⌘V to paste", so nothing you said is lost.
 - **Smart cleanup.** Removes fillers like "um" and "uh", applies spoken self-corrections, and formats spoken lists.
 - **Personal word list.** Fixes the spelling and capitalization of your names and terms, and gives Whisper hints about them. Names near the top of the list work best, because only about the first 540 characters are passed to Whisper.
 - **Snippets.** Say a trigger phrase to paste exact saved text, such as a signature or link.
@@ -78,6 +80,19 @@ Say your request, then finish with "make this prompt better". Verbaline pastes a
 - **Command Mode** (fn + Control). Rewrites or drafts text with Apple's on-device model.
 - **Noise filter.** Looks for voiced speech in each recording, ignores recordings that have none (silence, clicks, hum), and shortens long pauses before transcribing. Switch it off in the menu.
 - **Ignore Mac audio** (on by default). See below.
+
+### Writing styles
+
+Verbaline adjusts punctuation to fit where you're writing. These are formatting rules only: your words and numbers are never changed, added or removed.
+
+| Where | Default style | What it does |
+|---|---|---|
+| Email (Mail, Outlook, Spark and others, plus Gmail, Outlook, Yahoo and iCloud Mail in a browser) | Formal | Ends with a period and puts a greeting like "Hi Marcus," on its own line |
+| Work chat (Slack, Teams, Discord, Google Chat) | Casual | Drops the final period |
+| Texts (Messages, WhatsApp, Telegram, Messenger, Signal) | Casual | Drops the final period |
+| Everything else | As spoken | No change |
+
+Change any of them in the settings menu under **Writing Style** (Formal, Casual, Very casual or As spoken). To recognize email and chat sites in a browser, Verbaline reads the title of the browser window in front. That happens on your Mac and is never saved.
 
 ### Ignore Mac audio
 

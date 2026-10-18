@@ -15,18 +15,35 @@ enum TextInserter {
 
     private static let transientType = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
 
-    /// Pastes `text` into the focused app. Returns false if it couldn't (no Accessibility permission) —
-    /// the text is then left on the clipboard so it isn't lost.
-    /// `smartSpace`: add a space when the cursor sits right after a word. Off when replacing a selection.
+    enum Outcome { case pasted, copiedNoTextBox, copiedNoAccessibility }
+
+    /// Pastes `text` at the cursor. When there's clearly no text box to paste into (nothing focused, or the
+    /// focused thing isn't editable), the text stays on the clipboard afterwards so you can ⌘V it yourself;
+    /// ⌘V is still sent, in case the app hides its text box from Accessibility.
     @discardableResult
-    static func insert(_ text: String, smartSpace: Bool = true) -> Bool {
+    static func insertReporting(_ text: String, smartSpace: Bool = true) -> Outcome {
         guard AXIsProcessTrusted() else {
             copyToClipboard(text, transient: true)   // left for the user to paste; clipboard managers skip it
-            return false
+            return .copiedNoAccessibility
+        }
+        let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        if let pid, AXText.focusAcceptsText(in: pid) == false {
+            copyToClipboard(text)    // not transient: you'll want it on the clipboard (and in clipboard managers)
+            restoreWork?.cancel(); restoreWork = nil; pendingOriginal = nil; ourChangeCount = nil
+            pressCommandV()
+            return .copiedNoTextBox
         }
         let toPaste = smartSpace && needsLeadingSpace() ? " " + text : text
         paste(toPaste, into: .general, press: pressCommandV)
-        return true
+        return .pasted
+    }
+
+    /// Pastes `text` into the focused app. Returns false if it couldn't (no Accessibility permission) —
+    /// the text is then left on the clipboard so it isn't lost. true also covers "no text box": the text is
+    /// waiting on the clipboard. `smartSpace`: add a space when the cursor sits right after a word.
+    @discardableResult
+    static func insert(_ text: String, smartSpace: Bool = true) -> Bool {
+        insertReporting(text, smartSpace: smartSpace) != .copiedNoAccessibility
     }
 
     /// True when the focused field in the frontmost app is a password field.

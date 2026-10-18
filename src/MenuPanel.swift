@@ -138,7 +138,7 @@ struct PanelView: View {
 
     private var header: some View {
         HStack {
-            Image(systemName: "waveform").foregroundStyle(Theme.teal).font(.system(size: 16, weight: .semibold))
+            LogoMark(size: 24)
             Text("Verbaline").font(Theme.title(22))
             Spacer()
             HStack(spacing: 5) {
@@ -272,7 +272,7 @@ struct PanelView: View {
     }
 
     private var footer: some View {
-        HStack {
+        HStack(spacing: 0) {   // tight so six buttons (with Notes) still fit on one line each
             footerButton("character.book.closed", "Words", model.onWords)
             footerButton("bolt", "Snippets", model.onSnippets)
             footerButton("clock.arrow.circlepath", "History", model.onHistory)
@@ -286,7 +286,7 @@ struct PanelView: View {
         Button(action: action) {
             VStack(spacing: 3) {
                 Image(systemName: icon).font(.system(size: 15))
-                Text(label).font(.system(size: 10.5))
+                Text(label).font(.system(size: 10.5)).lineLimit(1).minimumScaleFactor(0.8)
             }
             .foregroundStyle(Theme.dim)
             .frame(maxWidth: .infinity)

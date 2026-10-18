@@ -8,12 +8,14 @@ import Foundation
 //     let lines = await t.add(you: micSamples, them: appSamples)   // call every second or so; returns new lines
 //     let rest  = await t.finish()                                 // at the end: whatever is still buffered
 //
-// How it works: "You" (your mic) and "Them" (the meeting app's sound) are kept as two separate streams. Once a
-// stream has about 30 seconds waiting, it is cut at the quietest moment shortly before the 30-second mark (so a
-// word isn't sliced in half), that piece goes to Whisper, and the text comes back as lines with start times in
-// seconds from the start of the meeting. A piece with no speech in it (SpeechGate says so) makes no line.
+// How it works: "You" (your mic) and "Them" (the meeting app's sound) are kept as two separate streams. As soon as
+// a stream's speaker pauses (0.7 s of quiet after some talking), the piece up to the pause goes to Whisper, so a
+// line appears a second or two after someone stops talking. Someone talking without a pause is cut at the quietest
+// moment before 12 s (so a word isn't sliced in half). Text comes back as lines with start times in seconds from
+// the start of the meeting. A piece with no speech in it (SpeechGate says so) makes no line.
+// (It used to wait for 30 s pieces; in a real meeting that felt far too slow to be "live".)
 //
-// Memory: only the audio not yet transcribed is held (about 35 s per side at most), never the whole meeting,
+// Memory: only the audio not yet transcribed is held (about 12 s per side at most), never the whole meeting,
 // so a 2-hour meeting costs the same as a 2-minute one. The lines themselves are small text and belong to the caller.
 //
 // removeEchoes is for when the meeting plays on the Mac's speakers: your mic hears the other person too, so
@@ -23,10 +25,12 @@ actor MeetingTranscriber {
     typealias Transcribe = ([Float]) async throws -> String
 
     static let sampleRate = 16_000
-    /// A side is cut once it holds this much audio.
-    static let chunkSeconds = 30.0
-    /// The cut is placed at the quietest moment in the last few seconds of the chunk.
-    static let cutSearchSeconds = 5.0
+    /// A side is cut at the first pause this long after some talking...
+    static let pauseSeconds = 0.7
+    /// ...or, if nobody pauses, once it holds this much audio.
+    static let chunkSeconds = 12.0
+    /// That forced cut is placed at the quietest moment in the last few seconds of the chunk.
+    static let cutSearchSeconds = 4.0
     /// Leftover audio shorter than this at the end of the meeting isn't worth sending to Whisper.
     static let minFinalSeconds = 0.4
 
@@ -101,6 +105,8 @@ actor MeetingTranscriber {
             let cut: Int
             if side.buffer.count >= chunkSamples {
                 cut = Self.quietestCut(in: side.buffer, near: chunkSamples)
+            } else if !final, let pause = Self.pauseCut(in: side.buffer) {
+                cut = pause
             } else if final, Double(side.buffer.count) >= Self.minFinalSeconds * Double(Self.sampleRate) {
                 cut = side.buffer.count
             } else {
@@ -142,9 +148,19 @@ actor MeetingTranscriber {
         return lines
     }
 
+    /// Where to cut a buffer whose speaker has paused: the end of the talking, once `pauseSeconds` of quiet follow it.
+    /// A buffer that is all quiet (2 s or more) is cut whole, so silence doesn't pile up. nil = keep listening.
+    static func pauseCut(in x: [Float]) -> Int? {
+        let sr = sampleRate
+        let regions = speechRegions(in: x, joinGap: pauseSeconds, wholeIfUnsure: false)
+        guard let last = regions.last else { return x.count >= 2 * sr ? x.count : nil }
+        let quietAfter = x.count - last.upperBound
+        return quietAfter + 4 * (sr / 20) >= Int(pauseSeconds * Double(sr)) ? last.upperBound : nil   // + the 0.2 s pad
+    }
+
     /// The stretches of `x` where someone is talking: 50 ms frames louder than the background, joined across pauses
     /// shorter than `joinGap`, padded by 0.2 s each side. Returns the whole chunk when it can't tell (all equally loud).
-    static func speechRegions(in x: [Float], joinGap: Double = 1.0) -> [Range<Int>] {
+    static func speechRegions(in x: [Float], joinGap: Double = 1.0, wholeIfUnsure: Bool = true) -> [Range<Int>] {
         let sr = sampleRate, frame = sr / 20
         guard x.count >= frame * 2 else { return x.isEmpty ? [] : [0..<x.count] }
         var rms: [Float] = []
@@ -159,8 +175,12 @@ actor MeetingTranscriber {
         let floor = rms.sorted()[rms.count / 10]         // the quietest tenth = background noise
         let threshold = max(floor * 3, 0.004)
         let loud = rms.map { $0 > threshold }
-        // Can't tell talking from background (steady sound throughout): keep the whole chunk.
-        if !loud.contains(true) || !loud.contains(false) { return [0..<x.count] }
+        // Can't tell talking from background (steady sound throughout): keep the whole chunk, or (pauseCut) say so.
+        if !loud.contains(false) { return [0..<x.count] }
+        if !loud.contains(true) {
+            // Everything equally loud: steady sound (keep it) or real quiet (pauseCut treats it as silence).
+            return wholeIfUnsure || floor > 0.004 ? [0..<x.count] : []
+        }
         let maxGap = Int(joinGap * 20), pad = 4          // frames (50 ms each)
         var regions: [Range<Int>] = []
         var runStart: Int?, lastLoud = -1

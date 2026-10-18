@@ -67,6 +67,17 @@ enum MeetingPipelineTest {
         for t in note.todos { print("  todo: \(t.owner.rawValue): \(t.task)") }
         check(!note.overview.isEmpty, "overview written")
         check(!note.todos.isEmpty, "to-dos found")
+        typealias C = MeetingSummarizer.Checks
+        check(C.isTopicTitle(note.title), "title is a short topic, not a cut-off sentence (\(note.title))")
+        check(!C.hasFirstPerson(note.overview), "overview says 'you', not 'I'")
+        check(C.sentences(note.overview).allSatisfy { C.unbackedClaims(in: $0, lines: C.spokenLines(lines)).isEmpty },
+              "overview makes no qualify/approve claim that wasn't said")
+        check(note.todos.contains { $0.owner == .them && $0.task.lowercased().contains("pay stub") }, "pay stubs are a Them to-do")
+        check(!note.todos.contains { $0.owner == .you && $0.task.lowercased().contains("pay stub") }, "pay stubs aren't a You to-do")
+        check(!note.todos.contains { $0.task.lowercased().contains("january") || $0.task.lowercased().contains("would like") },
+              "'we'd like to close by January' isn't a to-do")
+        check(note.todos.contains { $0.owner == .you && $0.task.lowercased().contains("checklist") }, "sending the checklist is a You to-do")
+        check(!note.todos.contains { $0.owner == .them && $0.task.lowercased().contains("checklist") }, "the checklist isn't also a Them to-do")
         let digits = Set(all.filter(\.isNumber).map(String.init))
         check(note.loanDetails.allSatisfy { d in d.value.filter(\.isNumber).allSatisfy { digits.contains(String($0)) } },
               "loan-detail digits all appear in the transcript")

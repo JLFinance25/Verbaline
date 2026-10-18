@@ -10,7 +10,7 @@ import Combine
 //     NotesModel               what the window shows (recording or not, live lines, time, past notes, answers)
 //     NotesWindow.insightsView the Insights tab; another session supplies it, a placeholder until then
 //     NotesWindowController    the window itself (show / close)
-//     MeetingPopup             the small "Take notes for this meeting?" panel; goes away by itself after ~20 s
+//     MeetingPopup             the small floating panel: "Take notes for this meeting?", "Meeting ended", "Notes ready"
 //
 // Every colour, font and corner comes from Theme (see docs/design-system.md).
 
@@ -452,46 +452,78 @@ final class NotesWindowController {
 // MARK: - Pop-up
 
 struct MeetingPopupView: View {
-    let appName: String
-    let notNow: () -> Void
-    let takeNotes: () -> Void
+    let title: String
+    let detail: String
+    let note: String?
+    let secondary: String?
+    let primary: String?
+    let onSecondary: () -> Void
+    let onPrimary: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Take notes for this meeting?").font(Theme.title(18)).foregroundColor(Theme.text)
-            Text("Looks like you're in a \(appName) meeting.").font(.system(size: 13)).foregroundColor(Theme.dim)
-            Text("Make sure everyone's OK with notes being taken.").font(.system(size: 11)).foregroundColor(Theme.faint)
-            HStack(spacing: 8) {
-                Spacer()
-                Button(action: notNow) {
-                    Text("Not now").font(.system(size: 13)).foregroundColor(Theme.text).modifier(Pill(fill: Theme.raised))
-                }.buttonStyle(.plain)
-                Button(action: takeNotes) {
-                    Text("Take notes").font(.system(size: 13, weight: .medium)).foregroundColor(Theme.page)
-                        .padding(.horizontal, 14).padding(.vertical, 7).background(Theme.teal, in: Capsule())
-                }.buttonStyle(.plain)
+            Text(title).font(Theme.title(18)).foregroundColor(Theme.text)
+            Text(detail).font(.system(size: 13)).foregroundColor(Theme.dim)
+            if let note { Text(note).font(.system(size: 11)).foregroundColor(Theme.faint) }
+            if secondary != nil || primary != nil {
+                HStack(spacing: 8) {
+                    Spacer()
+                    if let secondary {
+                        Button(action: onSecondary) {
+                            Text(secondary).font(.system(size: 13)).foregroundColor(Theme.text).modifier(Pill(fill: Theme.raised))
+                        }.buttonStyle(.plain)
+                    }
+                    if let primary {
+                        Button(action: onPrimary) {
+                            Text(primary).font(.system(size: 13, weight: .medium)).foregroundColor(Theme.page)
+                                .padding(.horizontal, 14).padding(.vertical, 7).background(Theme.teal, in: Capsule())
+                        }.buttonStyle(.plain)
+                    }
+                }
+                .padding(.top, 8)
             }
-            .padding(.top, 8)
         }
         .padding(18)
-        .frame(width: 340)
+        .frame(width: 340, alignment: .leading)
         .background(Theme.page, in: RoundedRectangle(cornerRadius: Theme.windowRadius))
         .overlay(RoundedRectangle(cornerRadius: Theme.windowRadius).stroke(Theme.line, lineWidth: 1))
         .padding(12)   // room for the shadow
     }
 }
 
+/// The small floating panel near the top right: "Take notes for this meeting?" when a meeting starts, and
+/// "Meeting ended" → "Your notes are ready" when it ends. One at a time; each goes away by itself.
 final class MeetingPopup {
     static let visibleSeconds: TimeInterval = 20
     private(set) var panel: NSPanel?
     private var timer: Timer?
 
-    /// Shows the pop-up near the top right of the main screen. `onDismiss` runs after "Not now" or the 20 s timeout.
+    /// Asks whether to take notes. "Not now" or the 20 s timeout calls onNotNow.
     func show(appName: String, onTakeNotes: @escaping () -> Void, onNotNow: @escaping () -> Void = {}) {
+        present(MeetingPopupView(title: "Take notes for this meeting?", detail: "Looks like you're in a \(appName) meeting.",
+                                 note: "Make sure everyone's OK with notes being taken.", secondary: "Not now", primary: "Take notes",
+                                 onSecondary: { [weak self] in self?.hide(); onNotNow() },
+                                 onPrimary: { [weak self] in self?.hide(); onTakeNotes() }),
+                seconds: Self.visibleSeconds, onTimeout: onNotNow)
+    }
+
+    /// The meeting is over and its notes are being written. Stays up until showReady() or hide().
+    func showEnded() {
+        present(MeetingPopupView(title: "Meeting ended", detail: "Writing your notes…", note: nil, secondary: nil, primary: nil,
+                                 onSecondary: {}, onPrimary: {}),
+                seconds: nil, onTimeout: {})
+    }
+
+    /// The notes are saved. `detail` says where, or what went wrong.
+    func showReady(title: String = "Your notes are ready", detail: String, onOpen: @escaping () -> Void) {
+        present(MeetingPopupView(title: title, detail: detail, note: nil, secondary: "Close", primary: "Open notes",
+                                 onSecondary: { [weak self] in self?.hide() },
+                                 onPrimary: { [weak self] in self?.hide(); onOpen() }),
+                seconds: Self.visibleSeconds, onTimeout: {})
+    }
+
+    private func present(_ view: MeetingPopupView, seconds: TimeInterval?, onTimeout: @escaping () -> Void) {
         hide()
-        let view = MeetingPopupView(appName: appName,
-            notNow: { [weak self] in self?.hide(); onNotNow() },
-            takeNotes: { [weak self] in self?.hide(); onTakeNotes() })
         let host = NSHostingView(rootView: view)
         let size = host.fittingSize
         let p = NSPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel],
@@ -509,8 +541,10 @@ final class MeetingPopup {
         }
         p.orderFrontRegardless()
         panel = p
-        timer = Timer.scheduledTimer(withTimeInterval: Self.visibleSeconds, repeats: false) { [weak self] _ in
-            self?.hide(); onNotNow()
+        if let seconds {
+            timer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
+                self?.hide(); onTimeout()
+            }
         }
     }
 
@@ -536,7 +570,7 @@ enum NotesWindowTest {
         return MeetingNote(
             title: "Purchase pre-approval chat", date: Date().addingTimeInterval(-3600 * 5), duration: 25 * 60 + 12,
             appName: "FaceTime",
-            overview: "The Parkers found a home at $450,000 and plan to put 20% down. They have saved slightly more than needed and want to compare rates before choosing a lender. Jayden will send a written quote today, and the Parkers will send recent pay stubs and two months of bank statements.",
+            overview: "The Parkers found a home at $450,000 and plan to put 20% down. They have saved slightly more than needed and want to compare rates before choosing a lender. You will send a written quote today, and the Parkers will send recent pay stubs and two months of bank statements.",
             todos: [MeetingTodo(owner: .you, task: "Send a written rate quote this afternoon"),
                     MeetingTodo(owner: .them, task: "Send recent pay stubs and two months of bank statements")],
             loanDetails: [.init(label: "Purchase price", value: "$450k"), .init(label: "Down payment", value: "$90k"),
@@ -600,6 +634,10 @@ enum NotesWindowTest {
             settle()
             if let pv = popup.panel?.contentView { r["\(mode).popup"] = snap(pv, "\(dir)/popup.png") }
             r["\(mode).popupExists"] = popup.panel != nil
+            popup.showEnded(); settle()
+            if let pv = popup.panel?.contentView { r["\(mode).popupEnded"] = snap(pv, "\(dir)/popup-ended.png") }
+            popup.showReady(detail: "Purchase pre-approval chat", onOpen: {}); settle()
+            if let pv = popup.panel?.contentView { r["\(mode).popupReady"] = snap(pv, "\(dir)/popup-ready.png") }
             popup.hide()
         }
         r["lookSwitchChangesWindow"] = w.appearance?.name == .darkAqua

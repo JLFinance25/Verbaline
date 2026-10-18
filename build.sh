@@ -25,6 +25,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp Info.plist "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP/Contents/Info.plist"
+cp resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"   # made by: Verbaline --renderlogo dir, then iconutil
 
 swiftc -swift-version 5 -O -target arm64-apple-macos26.0 ${FLAGS[@]+"${FLAGS[@]}"} \
   -import-objc-header bridging.h -Xcc -I"$WH/include" -Xcc -I"$GG/include" \

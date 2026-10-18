@@ -80,6 +80,29 @@ enum AXText {
         return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .nothingSelected : .text(text)
     }
 
+    /// Is the cursor in something you can type into? true = yes, false = definitely not (nothing focused, or the
+    /// focused thing isn't editable), nil = the app won't say (then we paste as usual and assume it works).
+    static func focusAcceptsText(in pid: pid_t) -> Bool? {
+        var ref: CFTypeRef?
+        let err = AXUIElementCopyAttributeValue(app(pid), kAXFocusedUIElementAttribute as CFString, &ref)
+        switch err {
+        case .success: break
+        case .noValue: return false                 // the app answered: nothing is focused
+        default: return nil                          // app doesn't support asking (some games, odd apps)
+        }
+        guard let ref, CFGetTypeID(ref) == AXUIElementGetTypeID() else { return false }
+        let el = ref as! AXUIElement
+        let role = string(el, kAXRoleAttribute) ?? ""
+        if ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXSecureTextField"].contains(role) { return true }
+        // Rich editors and web text boxes: they have a text cursor, or their value can be set.
+        var range: CFTypeRef?
+        if AXUIElementCopyAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, &range) == .success { return true }
+        var settable = DarwinBoolean(false)
+        if AXUIElementIsAttributeSettable(el, kAXValueAttribute as CFString, &settable) == .success, settable.boolValue,
+           role != "AXSlider", role != "AXCheckBox", role != "AXRadioButton", role != "AXPopUpButton" { return true }
+        return false
+    }
+
     static func isSecure(_ el: AXUIElement) -> Bool {
         string(el, kAXSubroleAttribute) == (kAXSecureTextFieldSubrole as String)
             || string(el, kAXRoleAttribute) == "AXSecureTextField"

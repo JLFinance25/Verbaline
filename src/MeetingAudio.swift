@@ -334,6 +334,12 @@ final class MeetingRecorder {
     }
 
     private func tick() {
+        // AirPods switch to call mode (24 kHz) when the meeting app opens their mic, and back afterwards, without
+        // the output device changing. Rebuild the tap on the new rate, or Them plays at the wrong speed.
+        if let tap, let now = tap.currentDeviceRate, abs(now - tap.sampleRate) > 1 {
+            rateChanges += 1
+            restartTap(pids: lastPids)
+        }
         drainTap()
         ticks += 1
         // Every 2 s: pick up sound processes the app started since. A tap's process list can't be changed
@@ -365,6 +371,8 @@ final class MeetingRecorder {
 
     /// Restarts made so far (diagnostics and tests).
     private(set) var restarts = 0
+    /// Times the output device's rate changed mid-meeting (AirPods into or out of call mode).
+    private(set) var rateChanges = 0
 
     private func drainTap() {
         guard let tap, let resampler else { return }

@@ -32,37 +32,44 @@ import AVFoundation
     // MARK: fake transcriber
 
     static func fakeTests() async {
-        // 1. Cut lands in the quiet gap near 30 s; start times are right; both sides kept apart.
-        //    "them": 27 s talking, 1.5 s gap, 26.5 s talking (55 s). "you": silent the whole time.
+        // 1. Live: a turn is transcribed as soon as its speaker pauses; a long monologue is cut at most every 12 s.
+        //    "them": 10 s talking, 1.5 s pause, 30 s talking without a pause. "you": silent the whole time.
+        //    (Was 30 s pieces; a real meeting showed that's far too slow to feel live.)
         let log = Log()
         let t = MeetingTranscriber(transcribe: { s in
             let n = await log.record(s.count)
             return "Chunk \(n) first sentence here. Chunk \(n) second sentence here."
         }, hasSpeech: fakeGate)
-        let them = tone(27) + quiet(1.5) + tone(26.5)
+        let them = tone(10) + quiet(1.5) + tone(30)
         var lines: [TranscriptLine] = []
+        var firstLineAt: Double?
         var i = 0
         while i < them.count {   // fed one second at a time, like the recorder
             let end = min(i + sr, them.count)
             lines += await t.add(you: quiet(Double(end - i) / Double(sr)), them: Array(them[i..<end]))
+            if firstLineAt == nil, !lines.isEmpty { firstLineAt = Double(end) / Double(sr) }
             i = end
         }
-        check(lines.count == 2 && lines.allSatisfy { $0.speaker == .them }, "first 30 s chunk gives 2 lines, all 'them'; silent 'you' gives none (\(lines.count))")
+        check(lines.allSatisfy { $0.speaker == .them }, "silent 'you' gives no lines (\(lines.filter { $0.speaker == .you }.count))")
+        check((firstLineAt ?? 99) <= 12, String(format: "first turn's lines arrive within 2 s of the pause (at %.0f s; they stopped at 10 s)", firstLineAt ?? -1))
         let first = await log.sizes.first ?? 0
-        let cutSec = Double(first) / Double(sr)
-        check(cutSec > 27 && cutSec < 28.5, String(format: "cut lands in the quiet gap (at %.2f s, gap is 27.0-28.5)", cutSec))
+        let firstSec = Double(first) / Double(sr)
+        check(firstSec > 10 && firstSec < 10.5, String(format: "first piece ends at the pause (%.2f s, talk ended at 10 s)", firstSec))
         let rest = await t.finish()
-        check(rest.count == 2, "finish() flushes the rest as 2 more lines (\(rest.count))")
-        check(abs((rest.first?.start ?? 0) - cutSec) < 0.01, String(format: "second chunk starts where the first ended (%.2f s)", rest.first?.start ?? -1))
-        let all = lines + rest
-        check(zip(all, all.dropFirst()).allSatisfy { $0.start < $1.start }, "start times strictly increase")
-        check(all[1].start > all[0].start + 3 && all[1].start < cutSec, "lines in a chunk share out its time (\(all.map { String(format: "%.1f", $0.start) }))")
+        let all = (lines + rest).sorted { $0.start < $1.start }
         let sizes = await log.sizes
-        check(sizes.reduce(0, +) <= them.count && Double(them.count - sizes.reduce(0, +)) / Double(sr) < 0.01, "every sample of 'them' was transcribed once")
+        check(sizes.allSatisfy { Double($0) / Double(sr) <= MeetingTranscriber.chunkSeconds + 0.5 },
+              "no piece longer than 12 s (\(sizes.map { String(format: "%.1f", Double($0) / Double(sr)) }))")
+        check(zip(all, all.dropFirst()).allSatisfy { $0.start < $1.start }, "start times strictly increase")
+        check(abs((all.first?.start ?? -1) - 0) < 0.01, "first line starts at 0 s")
+        let secondTurn = all.first { $0.start > 10 }?.start ?? -1
+        check(abs(secondTurn - 11.5) < 0.3, String(format: "second turn starts when they started again, about 11.5 s (%.2f)", secondTurn))
+        check(sizes.reduce(0, +) <= them.count, "no audio transcribed twice")
+        check(Double(sizes.reduce(0, +)) / Double(sr) > 39.5, String(format: "all 40 s of talking transcribed (%.1f s)", Double(sizes.reduce(0, +)) / Double(sr)))
 
         // 2. Both sides at once, told apart by the sign of the signal (You is above zero, Them below).
         let t2 = MeetingTranscriber(transcribe: { s in (s.reduce(0, +) > 0) ? "I say this today." : "They say that today." }, hasSpeech: fakeGate)
-        let a = await t2.add(you: tone(31).map { $0 + 0.4 }, them: tone(31).map { $0 - 0.4 })
+        let a = await t2.add(you: tone(5).map { $0 + 0.4 } + quiet(1), them: tone(5).map { $0 - 0.4 } + quiet(1))
         check(a.count == 2 && Set(a.map { $0.speaker }) == [.you, .them], "both sides transcribed in the same call")
         check(a.allSatisfy { ($0.speaker == .you) == ($0.text == "I say this today.") }, "each speaker gets the text of its own audio")
         check(zip(a, a.dropFirst()).allSatisfy { $0.start <= $1.start }, "output sorted by time")
@@ -91,15 +98,15 @@ import AVFoundation
         // 4. Transcriber throws or returns nothing: no lines, meeting carries on.
         struct Boom: Error {}
         let t4 = MeetingTranscriber(transcribe: { _ in throw Boom() }, hasSpeech: fakeGate)
-        let d = await t4.add(you: tone(31), them: quiet(31))
+        let d = await t4.add(you: tone(5) + quiet(1), them: quiet(6))
         check(d.count == 1 && d[0].text == MeetingTranscriber.notTranscribed && d[0].speaker == .you && d[0].start == 0,
               "a failing transcribe leaves one '(audio not transcribed)' line at the chunk's start")
         let failedN = await t4.failedChunks
         check(failedN == 1, "failed chunks are counted")
-        let d2 = await t4.add(you: tone(31), them: quiet(31))
-        check(d2.count == 1 && d2[0].start > 25, "meeting carries on after a failure (next marker at \(d2.first?.start ?? -1) s)")
+        let d2 = await t4.add(you: tone(5) + quiet(1), them: quiet(6))
+        check(d2.count == 1 && abs(d2[0].start - 6) < 0.3, "meeting carries on after a failure (next marker at \(d2.first?.start ?? -1) s)")
         let t5 = MeetingTranscriber(transcribe: { _ in "  " }, hasSpeech: fakeGate)
-        check((await t5.add(you: tone(31), them: quiet(31))).isEmpty, "empty text gives no lines")
+        check((await t5.add(you: tone(5) + quiet(1), them: quiet(6))).isEmpty, "empty text gives no lines")
 
         // 4b. Overlapping calls with a slow transcriber: never two transcriptions at once, nothing lost or repeated.
         actor Gauge { var now = 0, peak = 0, done = 0, samples = 0
