@@ -919,7 +919,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.onWords = { [weak self] in self?.closePanel(); self?.openDictionary() }
         panel.onSnippets = { [weak self] in self?.closePanel(); self?.openSnippets() }
         panel.onSettings = { [weak self] in self?.showSettingsMenu() }
-        panel.onNotes = { [weak self] in self?.closePanel(); self?.meetings.openWindow() }
+        panel.onNotes = { [weak self] in
+            guard let self else { return }
+            self.closePanel()
+            if self.meetingNotesEnabled { self.meetings.openWindow() } else { self.meetings.openInsights() }
+        }
         panel.onQuit = { NSApp.terminate(nil) }
 
         panel.onHistory = { [weak self] in

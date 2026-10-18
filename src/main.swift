@@ -1,3 +1,4 @@
+import SwiftUI
 import Cocoa
 import AVFoundation
 import ApplicationServices
@@ -257,17 +258,129 @@ if args.count > 2, args[1] == "--renderlogo" {
     exit(0)
 }
 
+// README pictures: `Verbaline --rendershowcase dir`. Everything drawn from made-up sample data (never your own
+// history or stats): the panel, the pill's states, the app icon, Insights (light and dark) and the frames of a
+// pill animation (dir/pill-frames, turned into a GIF by tests/make_showcase.sh).
+if args.count > 2, args[1] == "--rendershowcase" {
+    let dir = URL(fileURLWithPath: args[2], isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir.appendingPathComponent("pill-frames"), withIntermediateDirectories: true)
+    func savePNG(_ image: NSImage?, _ name: String) {
+        guard let image, let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { print("FAILED \(name)"); return }
+        try? png.write(to: dir.appendingPathComponent(name))
+    }
+    MainActor.assumeIsolated {
+        // 1. Panel, as someone who downloads it sees it (meeting notes off → Insights button).
+        let m = PanelModel()
+        m.status = .ready; m.statusText = "Ready"
+        m.wordsToday = 1240; m.lastSpeed = 0.42
+        m.lastText = "Send the disclosure to Sarah and cc the processor."
+        m.lastDate = Date().addingTimeInterval(-120)
+        m.toggles = [.init(id: "ai", label: "AI cleanup", icon: "sparkles", on: true),
+                     .init(id: "sounds", label: "Sounds", icon: "speaker.wave.2", on: true),
+                     .init(id: "typeOut", label: "Type it out", icon: "keyboard", on: false),
+                     .init(id: "enter", label: "Press enter", icon: "return", on: true)]
+        m.notesEnabled = false
+        savePNG(PanelView.render(m), "panel.png")
+
+        // 2. Pill states, on a light backdrop.
+        @MainActor func pill(_ v: PillFrame) -> NSImage? {
+            let r = ImageRenderer(content: v.padding(16).background(Color(white: 0.93)))
+            r.scale = 3
+            return r.nsImage
+        }
+        let dots = [CGFloat](repeating: 2, count: 11)
+        let bars: [CGFloat] = [4, 6, 8.5, 10.5, 12.5, 13.5, 12, 10, 8, 6, 4]
+        savePNG(pill(PillFrame(heights: dots)), "pill-1-listening.png")
+        savePNG(pill(PillFrame(heights: bars)), "pill-2-talking.png")
+        savePNG(pill(PillFrame(heights: dots, working: true, spinnerDegrees: 40)), "pill-3-writing.png")
+
+        // 3. App icon.
+        savePNG(Logo.appIconImage(pixels: 512), "icon.png")
+
+        // 4. Insights with a made-up month of dictation.
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("verbaline-showcase-stats-\(getpid()).json")
+        try? FileManager.default.removeItem(at: tmp)
+        let sample = Stats(fileURL: tmp)
+        let cal = Calendar.current
+        // "Today" is the most recent Friday afternoon, so the sample week looks like a normal working week.
+        var friday = Date()
+        while cal.component(.weekday, from: friday) != 6 { friday = cal.date(byAdding: .day, value: -1, to: friday)! }
+        let now = cal.date(bySettingHour: 16, minute: 30, second: 0, of: friday)!
+        let words = "the quick brown fox jumps over the lazy dog and sends the disclosure to the processor today "
+            .split(separator: " ").map(String.init)
+        for back in 0..<28 where back % 7 != 5 {   // a day off most weeks
+            let day = cal.date(byAdding: .day, value: -back, to: now)!
+            for k in 0..<(4 + (28 - back) / 3 + (back * 5) % 3) {   // busier in recent weeks
+                let n = 25 + (back * 13 + k * 7) % 60
+                let text = (0..<n).map { words[($0 + k) % words.count] }.joined(separator: " ")
+                sample.record(text: text, seconds: Double(n) / 2.4, at: cal.date(byAdding: .minute, value: -k * 37, to: day)!)
+            }
+        }
+        NotesWindow.insightsView = AnyView(InsightsView(stats: sample, now: { now }))
+        let model = NotesModel()
+        model.meetingTabsVisible = false
+        model.tab = .insights
+        let ctl = NotesWindowController(model: model)
+        ctl.show()
+        ctl.window?.setContentSize(NSSize(width: 760, height: 980))   // tall enough for the whole page
+        ctl.window?.setFrameOrigin(NSPoint(x: -4000, y: -4000))          // off screen, away from the mouse pointer
+        let savedLook = UserDefaults.standard.object(forKey: NotesModel.Look.key)
+        for mode in ["light", "dark"] {
+            model.look = mode == "dark" ? .dark : .light
+            RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+            if let cv = ctl.window?.contentView, let rep = cv.bitmapImageRepForCachingDisplay(in: cv.bounds) {
+                cv.cacheDisplay(in: cv.bounds, to: rep)
+                try? rep.representation(using: .png, properties: [:])?.write(to: dir.appendingPathComponent("insights-\(mode).png"))
+            }
+        }
+        if let savedLook { UserDefaults.standard.set(savedLook, forKey: NotesModel.Look.key) }
+        else { UserDefaults.standard.removeObject(forKey: NotesModel.Look.key) }
+        ctl.window?.close()
+        try? FileManager.default.removeItem(at: tmp)
+
+        // 5. Pill animation at 30 fps, using the real motion code: appear → dots → talk → settle → write → fade.
+        let motion = WaveMotion()
+        var frame = 0
+        @MainActor func emit(_ v: PillFrame) {
+            frame += 1
+            savePNG(pill(v), String(format: "pill-frames/f%04d.png", frame))
+        }
+        var t = 100.0
+        func step(_ level: CGFloat) -> [CGFloat] { t += 1.0 / 30; return motion.step(t: t, level: level, freeze: false) }
+        for i in 0..<6 { emit(PillFrame(heights: dots, visibility: Double(i + 1) / 6)) }          // 0.2 s fade in
+        for _ in 0..<15 { emit(PillFrame(heights: step(0))) }                                    // 0.5 s waiting
+        for i in 0..<66 {                                                                       // 2.2 s talking
+            let syllable = 0.5 + 0.5 * sin(Double(i) * 0.9)
+            let phrase: CGFloat = (i > 30 && i < 38) ? 0.08 : 1                                  // a short pause
+            emit(PillFrame(heights: step(CGFloat(0.35 + 0.35 * syllable) * phrase)))
+        }
+        for _ in 0..<10 { emit(PillFrame(heights: step(0))) }                                    // bars settle
+        for i in 0..<20 { emit(PillFrame(heights: step(0), working: true, spinnerDegrees: Double(i) * 24)) }  // writing
+        for i in 0..<6 { emit(PillFrame(heights: dots, working: true, spinnerDegrees: 480 + Double(i) * 24,
+                                        visibility: 1 - Double(i + 1) / 6)) }                  // fade out
+        for _ in 0..<12 { emit(PillFrame(heights: dots, visibility: 0)) }                        // pause before looping
+        print("frames: \(frame)")
+    }
+    exit(0)
+}
+
 // Pill preview: `Verbaline --renderpill dir` writes PNGs of the pill's states (no window is shown).
 if args.count > 2, args[1] == "--renderpill" {
     let dir = URL(fileURLWithPath: args[2], isDirectory: true)
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    let phases: [(String, OverlayModel.Phase)] = [
-        ("listening", .listening(handsFree: true)),
-        ("fixed", .badge(.fixed, "Helllock → HELOC")),
-        ("learned", .badge(.learned, "Fanny May → Fannie Mae")),
+    let phases: [(String, OverlayModel.Phase, Bool)] = [
+        ("1-pressed-dots", .listening(handsFree: false), false),
+        ("2-talking-bars", .listening(handsFree: false), true),
+        ("3-working-spinner", .processing, true),
+        ("hands-free-dots", .listening(handsFree: true), false),
+        ("hands-free-bars", .listening(handsFree: true), true),
+        ("command-working", .working("Rewriting…"), true),
+        ("fixed", .badge(.fixed, "Helllock → HELOC"), true),
+        ("learned", .badge(.learned, "Fanny May → Fannie Mae"), true),
     ]
-    for (name, phase) in phases {
-        if let image = MainActor.assumeIsolated({ OverlayController.renderPreview(phase) }),
+    for (name, phase, voice) in phases {
+        if let image = MainActor.assumeIsolated({ OverlayController.renderPreview(phase, heardVoice: voice) }),
            let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
            let png = rep.representation(using: .png, properties: [:]) {
             try? png.write(to: dir.appendingPathComponent("\(name).png"))
@@ -541,42 +654,6 @@ if args.count > 2, args[1] == "--boxtest" {
     exit(0)
 }
 
-// it must leave the words on the clipboard. Your clipboard text is restored at the end.
-if args.count > 2, args[1] == "--boxtest" {
-    let out = URL(fileURLWithPath: args[2])
-    let app = NSApplication.shared
-    app.setActivationPolicy(.regular)
-    let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 420, height: 120), styleMask: [.titled], backing: .buffered, defer: false)
-    let field = NSTextField(frame: NSRect(x: 20, y: 40, width: 380, height: 28))
-    window.contentView?.addSubview(field)
-    window.title = "Verbaline test — closes by itself"
-    window.makeKeyAndOrderFront(nil)
-    app.activate(ignoringOtherApps: true)
-    let pb = NSPasteboard.general
-    let saved = pb.string(forType: .string)
-    var r: [String: Any] = [:]
-    func wait(_ s: Double) { RunLoop.main.run(until: Date().addingTimeInterval(s)) }
-    wait(0.8)
-    // 1. Text field focused: pastes in, clipboard restored.
-    window.makeFirstResponder(field); wait(0.4)
-    r["fieldAccepts"] = AXText.focusAcceptsText(in: getpid()) == true
-    pb.clearContents(); pb.setString("ORIGINAL-CLIP", forType: .string)
-    let pasted = TextInserter.insertReporting("boxtest pasted words", smartSpace: false)
-    wait(1.2)
-    r["fieldOutcomePasted"] = pasted == .pasted
-    r["fieldGotText"] = field.stringValue.contains("boxtest pasted words")
-    r["clipboardRestoredAfterPaste"] = pb.string(forType: .string) == "ORIGINAL-CLIP"
-    // 2. Nothing focused: words stay on the clipboard.
-    window.makeFirstResponder(nil); wait(0.4)
-    r["noFocusRejects"] = AXText.focusAcceptsText(in: getpid()) == false
-    let copied = TextInserter.insertReporting("boxtest copied words")
-    wait(1.2)
-    r["noBoxOutcomeCopied"] = copied == .copiedNoTextBox
-    r["clipboardKeepsWords"] = pb.string(forType: .string) == "boxtest copied words"
-    pb.clearContents(); if let saved { pb.setString(saved, forType: .string) }
-    if let data = try? JSONSerialization.data(withJSONObject: r, options: [.prettyPrinted, .sortedKeys]) { try? data.write(to: out) }
-    exit(0)
-}
 
 if args.count > 2, args[1] == "--typetest" {
     var report: [String: Any] = ["expected": typeSample]

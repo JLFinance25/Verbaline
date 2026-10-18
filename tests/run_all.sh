@@ -34,6 +34,7 @@ echo "▶ compiling"
 "${SW[@]}" src/MeetingTypes.swift src/MeetingSummarizer.swift tests/meeting_summarizer_test.swift -o "$BIN/meeting_summarizer_test" || exit 1
 "${SW[@]}" src/History.swift src/Stats.swift tests/stats_test.swift -o "$BIN/stats_test" || exit 1
 "${SW[@]}" src/PromptBoost.swift tests/prompt_boost_test.swift -o "$BIN/prompt_boost_test" || exit 1
+"${SW[@]}" src/Overlay.swift tests/overlay_test.swift -o "$BIN/overlay_test" || exit 1
 "${SW[@]}" src/AppStyles.swift tests/app_styles_test.swift -o "$BIN/app_styles_test" || exit 1
 "${SW[@]}" src/ModelDownloader.swift tests/support/model_paths_stub.swift tests/model_download_test.swift -o "$BIN/model_download_test" || exit 1
 WH="$(brew --prefix whisper-cpp)"; GG="$(brew --prefix ggml)"
@@ -80,6 +81,7 @@ if [[ $QUICK == 1 ]]; then run meeting_audio "$BIN/meeting_audio_test" --quick; 
 [[ $QUICK == 1 ]] || run call_mode "$BIN/call_mode_test" build/test_audio/long.wav
 run stats "$BIN/stats_test"
 run prompt_boost "$BIN/prompt_boost_test" --ai
+run overlay "$BIN/overlay_test"
 run app_styles "$BIN/app_styles_test"
 run model_download "$BIN/model_download_test"
 run cleaner "$BIN/cleaner_test" --prewarm

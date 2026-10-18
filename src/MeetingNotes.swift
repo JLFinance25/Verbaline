@@ -69,7 +69,15 @@ final class MeetingNotes {
     }
 
     func openWindow() {
+        model.meetingTabsVisible = true
         reloadPastNotes()
+        window.show()
+    }
+
+    /// Insights only, for when meeting notes are switched off (no meeting tabs, nothing recorded).
+    func openInsights() {
+        model.meetingTabsVisible = false
+        model.tab = .insights
         window.show()
     }
 

@@ -39,6 +39,8 @@ final class NotesModel: ObservableObject {
         didSet { UserDefaults.standard.set(look.rawValue, forKey: Look.key) }
     }
     @Published var tab: Tab = .live
+    /// false when meeting notes are switched off: the window shows only the Insights tab.
+    @Published var meetingTabsVisible = true
     @Published var isRecording = false
     @Published var lines: [TranscriptLine] = []
     @Published var elapsed: TimeInterval = 0
@@ -141,7 +143,7 @@ struct NotesRootView: View {
 
     private var header: some View {
         HStack {
-            Text("Notes").font(Theme.title(30)).foregroundColor(Theme.text)
+            Text(model.meetingTabsVisible ? "Notes" : "Insights").font(Theme.title(30)).foregroundColor(Theme.text)
             Spacer()
             lookPicker
             if model.isRecording {
@@ -178,7 +180,7 @@ struct NotesRootView: View {
 
     private var tabs: some View {
         HStack(spacing: 22) {
-            ForEach(NotesModel.Tab.allCases, id: \.self) { t in
+            ForEach(NotesModel.Tab.allCases.filter { model.meetingTabsVisible || $0 == .insights }, id: \.self) { t in
                 Button { model.tab = t } label: {
                     VStack(spacing: 6) {
                         Text(t.rawValue).font(.system(size: 14, weight: model.tab == t ? .semibold : .regular))

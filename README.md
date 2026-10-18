@@ -1,8 +1,20 @@
+<p align="center"><img src="docs/images/icon.png" width="112" alt="Verbaline icon"></p>
+
 # Verbaline
+
+<p align="center">
+  <img src="docs/images/pill.gif" width="216" alt="The Verbaline pill: dots when you press fn, bars while you talk, a spinner while it writes, then it fades away">
+</p>
 
 **Private, on-device voice dictation for macOS.** Hold **fn**, talk, let go, and your words appear wherever your cursor is: cleaned up, punctuated and formatted. Highlight text and hold **fn + Control** to rewrite it by voice.
 
 Everything runs on your Mac. Speech recognition uses Whisper (large-v3-turbo, through whisper.cpp), and cleanup and rewriting use Apple's on-device model. Verbaline needs no account and has no subscription. Its only network use is a one-time download of the speech model (see [Privacy](#privacy)).
+
+**Lives in your menu bar.** No dashboard window to keep open and no account: a small pill shows while you talk, and one click on the menu bar icon shows everything else.
+
+<p align="center">
+  <img src="docs/images/panel.png" width="330" alt="The Verbaline menu bar panel: status, today's words, speed, last dictation, quick switches">
+</p>
 
 > A personal project shared as-is. It is built and tested on one Mac, so expect rough edges elsewhere. Issues and pull requests are welcome.
 
@@ -100,6 +112,7 @@ Say your request, then finish with "make this prompt better". Verbaline pastes a
 - **Command Mode** (fn + Control). Rewrites or drafts text with Apple's on-device model.
 - **Noise filter.** Looks for voiced speech in each recording, ignores recordings that have none (silence, clicks, hum), and shortens long pauses before transcribing. Switch it off in the menu.
 - **Ignore Mac audio** (on by default). See below.
+- **Insights.** Your words, pace, streaks and badges, from counts only. See [Insights](#insights).
 
 ### Writing styles
 
@@ -130,6 +143,23 @@ Turn the setting off if you want the opposite, for example to transcribe a video
 
 - **Left-click** the Verbaline icon in the menu bar to open the panel: status, today's numbers, your last dictation, and quick switches.
 - **Right-click** the icon (or Control-click) to open the full settings menu.
+
+While you dictate, a small pill at the bottom of the screen shows what's happening:
+
+| Listening | You're talking | Writing your text |
+|:---:|:---:|:---:|
+| <img src="docs/images/pill-1-listening.png" width="150" alt="Pill with a line of dots"> | <img src="docs/images/pill-2-talking.png" width="150" alt="Pill with sound bars"> | <img src="docs/images/pill-3-writing.png" width="150" alt="Pill with dots and a spinner"> |
+
+### Insights
+
+Click **Insights** in the panel to see your words, pace, streaks, a calendar of the days you dictated, your busiest day and badges. "Time saved" is an estimate based on a typing speed you can set. Insights keeps only counts (words, seconds and dictations per day), never what you said, and you can reset it any time.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/insights-dark.png">
+  <img src="docs/images/insights-light.png" width="560" alt="The Insights window: total words, words per minute, streak, time saved, a calendar of dictation days, this week, busiest day and badges">
+</picture>
+
+<sub>Pictures use made-up sample data.</sub>
 
 ---
 

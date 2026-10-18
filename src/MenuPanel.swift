@@ -276,7 +276,9 @@ struct PanelView: View {
             footerButton("character.book.closed", "Words", model.onWords)
             footerButton("bolt", "Snippets", model.onSnippets)
             footerButton("clock.arrow.circlepath", "History", model.onHistory)
+            // Meeting notes on: Notes (meetings + Insights). Off: Insights only.
             if model.notesEnabled { footerButton("note.text", "Notes", model.onNotes) }
+            else { footerButton("chart.bar", "Insights", model.onNotes) }
             footerButton("gearshape", "Settings", model.onSettings)
             footerButton("power", "Quit", model.onQuit)
         }
