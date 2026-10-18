@@ -1,10 +1,8 @@
-<p align="center"><img src="docs/images/icon.png" width="112" alt="Verbaline icon"></p>
+<p align="center">
+  <img src="docs/images/logo-morph.gif" width="360" alt="The Verbaline logo, a green V with three purple bars, turning into the dictation pill, talking, and turning back">
+</p>
 
 # Verbaline
-
-<p align="center">
-  <img src="docs/images/pill.gif" width="216" alt="The Verbaline pill: dots when you press fn, bars while you talk, a spinner while it writes, then it fades away">
-</p>
 
 **Private, on-device voice dictation for macOS.** Hold **fn**, talk, let go, and your words appear wherever your cursor is: cleaned up, punctuated and formatted. Highlight text and hold **fn + Control** to rewrite it by voice.
 
@@ -145,6 +143,8 @@ Turn the setting off if you want the opposite, for example to transcribe a video
 - **Right-click** the icon (or Control-click) to open the full settings menu.
 
 While you dictate, a small pill at the bottom of the screen shows what's happening:
+
+<p align="center"><img src="docs/images/pill.gif" width="216" alt="The pill: dots when you press fn, bars while you talk, a spinner while it writes, then it fades away"></p>
 
 | Listening | You're talking | Writing your text |
 |:---:|:---:|:---:|

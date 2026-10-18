@@ -258,6 +258,29 @@ if args.count > 2, args[1] == "--renderlogo" {
     exit(0)
 }
 
+// Startup animation check: `Verbaline --launchmorphtest dir` plays it on screen and saves a snapshot every 0.1 s.
+if args.count > 2, args[1] == "--launchmorphtest" {
+    let dir = URL(fileURLWithPath: args[2], isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    NSApplication.shared.setActivationPolicy(.accessory)
+    let morph = LaunchMorph()
+    morph.play()
+    let start = Date()
+    var n = 0
+    while Date().timeIntervalSince(start) < 2.2 {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        n += 1
+        if let w = NSApp.windows.first(where: { $0 is NSPanel && $0.isVisible }), let v = w.contentView,
+           let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) {
+            v.cacheDisplay(in: v.bounds, to: rep)
+            let alpha = String(format: "%.2f", w.alphaValue)
+            try? rep.representation(using: .png, properties: [:])?.write(to: dir.appendingPathComponent(String(format: "t%02d-a%@.png", n, alpha)))
+        }
+    }
+    print("visible after 2.2 s: \(NSApp.windows.contains { $0 is NSPanel && $0.isVisible })")
+    exit(0)
+}
+
 // README pictures: `Verbaline --rendershowcase dir`. Everything drawn from made-up sample data (never your own
 // history or stats): the panel, the pill's states, the app icon, Insights (light and dark) and the frames of a
 // pill animation (dir/pill-frames, turned into a GIF by tests/make_showcase.sh).
@@ -361,6 +384,28 @@ if args.count > 2, args[1] == "--rendershowcase" {
                                         visibility: 1 - Double(i + 1) / 6)) }                  // fade out
         for _ in 0..<12 { emit(PillFrame(heights: dots, visibility: 0)) }                        // pause before looping
         print("frames: \(frame)")
+
+        // 6. Logo ↔ pill morph at 30 fps: logo → pill → talks → back into the logo.
+        try? FileManager.default.createDirectory(at: dir.appendingPathComponent("morph-frames"), withIntermediateDirectories: true)
+        var mframe = 0
+        func memit(_ img: NSImage) { mframe += 1; savePNG(img, String(format: "morph-frames/f%04d.png", mframe)) }
+        func render(_ img: NSImage) -> NSImage {   // 2x pixels for a crisp GIF
+            let px = NSSize(width: img.size.width * 2, height: img.size.height * 2)
+            return NSImage(size: px, flipped: false) { r in img.draw(in: r); return true }
+        }
+        for _ in 0..<15 { memit(render(Logo.morphImage(u: 0))) }
+        for i in 0..<27 { memit(render(Logo.morphImage(u: CGFloat(i + 1) / 27))) }
+        for _ in 0..<6 { memit(render(Logo.morphImage(u: 1))) }
+        let mm = WaveMotion(); var mt = 500.0
+        for i in 0..<54 {
+            mt += 1.0 / 30
+            let syllable = 0.5 + 0.5 * sin(Double(i) * 0.9)
+            memit(render(Logo.morphImage(u: 1, wave: mm.step(t: mt, level: CGFloat(0.35 + 0.35 * syllable), freeze: false))))
+        }
+        for _ in 0..<9 { mt += 1.0 / 30; memit(render(Logo.morphImage(u: 1, wave: mm.step(t: mt, level: 0, freeze: false)))) }
+        for i in 0..<27 { memit(render(Logo.morphImage(u: 1 - CGFloat(i + 1) / 27))) }
+        for _ in 0..<18 { memit(render(Logo.morphImage(u: 0))) }
+        print("morph frames: \(mframe)")
     }
     exit(0)
 }

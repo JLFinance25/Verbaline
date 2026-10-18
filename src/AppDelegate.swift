@@ -38,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var panelTimer: Timer?
     private let settingsMenu = NSMenu()
     private let ducker = MusicDucker()
+    private let launchMorph = LaunchMorph()
     /// Sound was playing on the Mac's speakers when this recording started: use the stricter music gate.
     private var musicDuringRecording = false
     private var mode: Mode = .idle {
@@ -165,9 +166,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         writeStatus()
         let statusTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in self?.writeStatus() }
         statusTimer.tolerance = 5
-        // Confirm it's on: soft chime + tiny pill.
+        // Confirm it's on: soft chime + the logo turning into the pill (or a plain flash with Reduce Motion on).
         play("Glass")
-        overlay.flash("Verbaline on", seconds: 1.5)
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            overlay.flash("Verbaline on", seconds: 1.5)
+        } else {
+            launchMorph.play()
+        }
         meetings.onNotice = { [weak self] text in self?.overlay.flash(text, seconds: 2) }
         if meetingNotesEnabled { meetings.start() }   // watches for meetings; asks before recording anything
 
